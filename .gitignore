@@ -1,0 +1,27 @@
+# Ignore compiled Python files
+*.pyc
+
+# Ignore files in the "logs" directory
+logs/
+
+# Ignore .env files
+.env
+
+# Ignore training data/photos
+*.png
+*.jpg
+*.jpeg
+training_data/
+
+# Ignore env
+env/
+
+# Ignore output of test runs
+output_test*
+
+# In case of future need for photos, we can add the following line to make an exception to ignoring photos
+# !project_photos/*.png
+
+# Ignore api key file
+api_key.yaml
+

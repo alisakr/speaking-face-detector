@@ -1,0 +1,7 @@
+deepface
+fastai
+numpy
+opencv-python
+Pillow
+requests
+tensorflow<2.16.0

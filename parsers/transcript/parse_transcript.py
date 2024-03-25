@@ -1,6 +1,6 @@
 import json
 
-def get_times_and_speakers(json_filename, speakers_to_include=None, start_time_seconds=0, end_time_seconds=None, image_for_each_segment=False):
+def get_times_and_speakers(json_filename, speakers_to_include=None, start_time_seconds=0, end_time_seconds=None, image_for_each_segment=True):
     '''
     Given a json filename, returns a list of tuples where each tuple contains the start and end times and the speaker name.
     '''
@@ -14,12 +14,12 @@ def get_times_and_speakers(json_filename, speakers_to_include=None, start_time_s
         #                            }      
         segments = data['segments']
         times_and_speakers = []
-        epsillon = 0.000001
+        # epsillon = 0.000001
         for i, segment in enumerate(segments):
-
-            speaker = segment['speaker_id'].replace(' ', '_').lower()
             if image_for_each_segment:
-                speaker = f"{speaker}_{i}"
+                speaker = f"paragraph_{i+1}"
+            else:
+                speaker = segment['speaker_id'].replace(' ', '_').lower()
             if speakers_to_include is not None and segment['speaker_id'] not in speakers_to_include:
                 continue
             wdlist = segment['wdlist']
@@ -29,6 +29,8 @@ def get_times_and_speakers(json_filename, speakers_to_include=None, start_time_s
                 if end_time_seconds is not None and start > end_time_seconds:
                     break
                 if prior_end is not None:
+                    # adds a segment if there is a gap between the end of the last segment and the start of the current segment
+                    # potentially useful for collecting silent speakers for training data
                     # times_and_speakers.append((prior_end+epsillon, start-epsillon, None))
                     pass
                 end = wd['end']

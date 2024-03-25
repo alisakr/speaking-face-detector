@@ -5,7 +5,9 @@ from parsers.image import (
     combine_images_horizontally, 
     extract_faces_deepface,
     get_faceai_image,
+    get_image_from_facial_image_object,
     get_image_n_parts_vertical,
+    get_lips_from_image_of_face,
     get_part_of_image,
     save_image_into_n_parts_horizontal,
 )
@@ -14,6 +16,8 @@ from constants import (
     deepface_confidence_key,
     face_recognition_threshold,
 )
+from entities.facial_image import FacialImage
+from entities.speaker import Speaker
 
 def parse_video_for_speakers(video_path, transcript_segments, output_folder, ordered_speakers=None):
     cap = cv2.VideoCapture(video_path)
@@ -262,8 +266,10 @@ def parse_video_for_classifying_speakers(
         output_folder, 
         n=5, 
         num_segments_to_try=None,
-        target_probability_threshold=0.5,
+        debug_mode=False,
+        debug_mode_output_folder=None,
         use_lips_only=True,
+        target_probability_threshold=0.8,
         ):
     '''
     testing out how to find the speaker
@@ -287,53 +293,187 @@ def parse_video_for_classifying_speakers(
     time_per_frame_ms = 1000 / fps
     processed_segments = 0
     speaker_faces = {}
+    speaker_num_matched_words = {}
+    speaker_num_unmatched_words = {}
+    #TODO: remove or set configurable cap on num words per speaker
+    per_speaker_cap = 100
     for segment_info in transcript_segments:
         # Step 1: get speaker, time.
         start_time_ms = segment_info[0] * 1000
         end_time_ms = segment_info[1] * 1000
         current_speaker = segment_info[2]
+        if current_speaker not in speaker_num_matched_words:
+            speaker_num_matched_words[current_speaker] = 0
+        if current_speaker not in speaker_num_unmatched_words:
+            speaker_num_unmatched_words[current_speaker] = 0
+        if speaker_num_matched_words[current_speaker] > per_speaker_cap:
+            continue
         # Set the video capture to get n/2 segments prior to the middle, the middle segment and (n/2)-1 after the middle
         num_pre_middle_frames = n // 2
         current_time_ms = (start_time_ms + end_time_ms) / 2
         current_time_ms -= num_pre_middle_frames * time_per_frame_ms
         cap.set(cv2.CAP_PROP_POS_MSEC, current_time_ms)
-        faces_by_person = []
-        # we want to take the face with the strongest face image for each person
-        # faces_by_person_index_to_best_face therefore is...
-        # faces_by_person_index: (face_index_in_list, confidence)
-        faces_by_person_index_to_best_face = []
-        frames = []
-        for i in range(n):
-            # Read the next frame from the video
-            current_time_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
-            _, frame = cap.read()
-            if frame is None:
-                continue
-            frames.append(frame)
-            faces = None
-            try:
-                faces = extract_faces_deepface(frame)
-            except Exception as e:
-                print(f"Error: {e}")
-                continue
-            if len(faces) == 0:
-                break
-            
-            if i == 0:
-                for j in range(len(faces)):
-                    # WARNING: we don't store i/which frame here because we only accept n consecutive frames
-                    # if that changes then we need to store the frame index, not just the face
-                    if faces[j][deepface_confidence_key] < face_recognition_threshold:
-                        continue
-                    faces_by_person.append([faces[j]])
-                    faces_by_person_index_to_best_face.append((i, faces[j][deepface_confidence_key]))
+        speaker, speaker_prob = get_most_likely_speaker(
+            cap, 
+            model, 
+            target, 
+            num_frames=n, 
+            use_lips_only=use_lips_only,
+            target_probability_threshold=target_probability_threshold,
+        )
+        if speaker is None:
+            speaker_num_unmatched_words[current_speaker] += 1
+            if debug_mode:
+                print(f"Could not find a speaker for segment of {current_speaker} at time {current_time_ms}")
+            continue
+        speaker_num_matched_words[current_speaker] += 1
+        speaker.name = current_speaker
+        if debug_mode:
+            print(f"Speaker: {speaker.name}, Probability: {speaker_prob}")
+            raw_image = combine_images_horizontally(output_filename=None, images_in_memory_copy=[
+                get_image_from_facial_image_object(facial_image) for facial_image in speaker.get_facial_images()])
+            label = target
+            cv2.imwrite(f"{debug_mode_output_folder}/{current_speaker}_{label}_{current_time_ms}_{speaker_prob}_raw.png", raw_image)
+            cv2.imwrite(f"{debug_mode_output_folder}/{current_speaker}_{current_time_ms}_frame.png", speaker.get_best_image().frame)
+       
+        
+        if current_speaker not in speaker_faces:
+            speaker.add_matched_word(speaker_prob)
+            speaker_faces[current_speaker] = [speaker]
+            speaker.keep_best_image_only()
+        else:
+            best_match_index = find_best_match_to_speaker(
+                speaker, [existing_speaker.get_best_image() for existing_speaker in speaker_faces[current_speaker]])
+            if best_match_index is not None:
+                speaker_faces[current_speaker][best_match_index].add_matched_word(speaker_prob)
+                speaker_faces[current_speaker][best_match_index].add_image(speaker.get_best_image())
+                speaker_faces[current_speaker][best_match_index].keep_best_image_only()
             else:
-                best_match_for_new_frame_faces = {}
-                for j, new_face in enumerate(faces):
-                    min_distance = 1.0
-                    best_match = None
-                    for k, faces_for_person in enumerate(faces_by_person):
-                        '''
+                speaker.add_matched_word(speaker_prob)
+                speaker_faces[current_speaker].append(speaker)
+                speaker.keep_best_image_only()
+        
+        processed_segments += 1
+        if num_segments_to_try is not None and processed_segments >= num_segments_to_try:
+            break
+
+    # now we have the speaker faces, we want to determine most likely speaker and save the best image for each speaker
+    for speaker_name, speakers in speaker_faces.items():
+        max_matched_words = 0
+        best_speaker_on_word_count = None
+        max_probability = 0
+        best_speaker_on_probability = None
+        for speaker in speakers:
+            if speaker.num_matched_words >= max_matched_words:
+                max_matched_words = speaker.num_matched_words
+                best_speaker_on_word_count = speaker
+            if speaker.sum_matched_words_probability >= max_probability:
+                max_probability = speaker.sum_matched_words_probability
+                best_speaker_on_probability = speaker  
+        if best_speaker_on_word_count is not None and best_speaker_on_probability is not None:
+            if best_speaker_on_word_count != best_speaker_on_probability:
+                print(f"Warning: Speaker {speaker_name} has different best speakers for word count and probability")
+                continue
+            output_filename = f"{output_folder}/word_count_{speaker_name}_{max_matched_words}_{max_probability}.png"
+            face_output = get_image_from_facial_image_object(best_speaker_on_word_count.get_best_image(), padding=25)
+            cv2.imwrite(output_filename, face_output)
+
+                
+        
+
+    cap.release()
+    # Close all OpenCV windows
+    cv2.destroyAllWindows()
+
+def get_most_likely_speaker(cap, model, target, num_frames=5, use_lips_only=True, target_probability_threshold=0.8):
+    '''
+    read num_frames frames and return the most likely speaker of a single word
+    parameters:
+        cap: the video capture object, set to the first frame to read
+        model: the model to use for speaker classification
+        target: the target label to maximize for speaker classification
+        n: the number of frames to read
+        use_lips_only: whether to use only the lips for the speaker classification (default: True)
+    '''
+    potential_speakers = []
+    frames = []
+    for i in range(num_frames):
+        # Read the next frame from the video
+        _, frame = cap.read()
+        if frame is None:
+            return None
+        frames.append(frame)
+        faces = None
+        try:
+            faces = extract_faces_deepface(frame)
+            faces = [FacialImage(face, frame) for face in faces]
+        except Exception as e:
+            print(f"Error: {e}")
+            continue
+        if len(faces) == 0:
+            return None
+        if i == 0:
+            for face in faces:
+                # WARNING: we don't store i/which frame here because we only accept n consecutive frames
+                # if that changes then we need to store the frame index, not just the face
+                if face.confidence < face_recognition_threshold:
+                    continue
+                potential_speaker = Speaker("", [face])
+                potential_speakers.append(potential_speaker)
+        else:
+            matched_new_faces = set()
+            matched_speakers = []
+            for speaker in potential_speakers:
+                best_match_index = find_best_match_to_speaker(speaker, faces)
+                if best_match_index is not None:
+                    matched_new_faces.add(best_match_index)
+                    matched_speakers.append(speaker)
+                    speaker.add_image(faces[best_match_index])
+                    faces.pop(best_match_index)
+            potential_speakers = matched_speakers
+    
+    # pre_model_transforms takes facial_image_object as input and then each function takes as input the result of the previous function
+    # last function should return image
+    pre_model_transforms = [get_image_from_facial_image_object]
+    if use_lips_only:
+        pre_model_transforms.append(get_lips_from_image_of_face)
+    most_likely_speaker = None
+    speaker_prob = 0
+    for speaker in potential_speakers:
+        image_parts = []
+        for facial_image in speaker.get_facial_images():
+            image_part = facial_image
+            for transform in pre_model_transforms:
+                image_part = transform(image_part)
+            image_parts.append(image_part)
+        input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts)
+        predictions = model.predict(get_faceai_image(input_image_to_model))
+        if predictions[0] != target:
+            continue
+        if predictions[2].max() < target_probability_threshold:
+            continue
+        if predictions[2].max() > speaker_prob:
+            speaker_prob = predictions[2].max()
+            most_likely_speaker = speaker
+    return most_likely_speaker, speaker_prob
+
+
+
+def find_best_match_to_speaker(speaker, faces):
+    '''
+    find the best match to the speaker from the faces
+    parameters:
+        speaker: the speaker object
+        faces: the list of facial images
+    returns:
+        best_match_index: index of the best match to the speaker
+    '''
+    best_match_index = None
+    min_distance = 1.0
+    for i, face in enumerate(faces):
+        if face.confidence < face_recognition_threshold:
+            continue
+        '''
                         example deepface.verify output
                         {
                             'verified': True,
@@ -356,133 +496,13 @@ def parse_video_for_classifying_speakers(
                             'right_eye': None}},
                             'time': 1.26,
                         }
-                        '''
-                        if len(faces_for_person) < i:
-                            continue
-                        best_face_index_of_existing_person = faces_by_person_index_to_best_face[k][0]
-                        face_test = DeepFace.verify(
-                            new_face[deepface_embedding_key], 
-                            faces_for_person[best_face_index_of_existing_person][deepface_embedding_key], enforce_detection=False)
-                        if face_test["verified"]:
-                            if face_test["distance"] < min_distance:
-                                min_distance = face_test["distance"]
-                                best_match = k
-                    if best_match is not None:
-                        if best_match not in best_match_for_new_frame_faces:
-                            best_match_for_new_frame_faces[best_match] = (j, min_distance)
-                        else:
-                            if min_distance < best_match_for_new_frame_faces[best_match][1]:
-                                best_match_for_new_frame_faces[best_match] = (j, min_distance)
-                            
-                for j, face_list in enumerate(faces_by_person):
-                    # here we are looping through existing faces and checking if the new faces match
-                    if j in best_match_for_new_frame_faces:
-                        new_face = faces[best_match_for_new_frame_faces[j][0]]
-                        face_list.append(new_face)
-                        if new_face[deepface_confidence_key] > faces_by_person_index_to_best_face[j][1]:
-                            faces_by_person_index_to_best_face[j] = (i, new_face[deepface_confidence_key])
-        # now we have the up to n faces for each person
-        # TODO: make this loop mapping function or list comprehension
-        def get_facial_area_adjusted(facial_area, frame, padding=0):
-            face_part_of_frame = get_part_of_image(facial_area, frame, padding)
-            if use_lips_only:
-                # assume lips to be in the bottom third of the face
-                return get_image_n_parts_vertical(image_in_memory_copy=face_part_of_frame, n=3)[-1]
-            return face_part_of_frame
-        potential_speakers = []
-        potential_speakers_raw = []
-        for faces in faces_by_person:
-            if len(faces) < n:
-                continue
-            image_parts = [get_facial_area_adjusted(face['facial_area'], frames[j]) for j, face in enumerate(faces)]
-            image_parts_raw = [get_part_of_image(face['facial_area'], frames[j]) for j, face in enumerate(faces)]
-            potential_speakers.append(image_parts)
-            potential_speakers_raw.append(image_parts_raw)
-        num_silent = 0
-        num_speaking = 0
-        max_speaker_prob = 0
-        max_speaker_index = len(potential_speakers)
-        min_speaker_prob = 1.0
-        preds = []
-        for i, potential_speaker in enumerate(potential_speakers):
-            input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=potential_speaker)
-            # TODO: apply model here
-            predictions = model.predict(get_faceai_image(input_image_to_model))
-            preds.append(predictions)
-            speaker_prob = predictions[2].max()
-            if predictions[0] == target:
-                num_speaking += 1
-                if speaker_prob > max_speaker_prob:
-                    max_speaker_prob = speaker_prob
-                    max_speaker_index = i
-                if speaker_prob < min_speaker_prob:
-                    min_speaker_prob = speaker_prob
-
-            else:
-                num_silent += 1 
-        for i, potential_speaker in enumerate(potential_speakers):
-            raw_image = combine_images_horizontally(output_filename=None, images_in_memory_copy=potential_speakers_raw[i])
-            predictions = preds[i]
-            print(predictions[2])
-            if i == max_speaker_index:
-                label = 'speaking'
-                speaker_prob = predictions[2].max()
-                cv2.imwrite(f"{output_folder}/{current_speaker}_{label}_{current_time_ms}_{speaker_prob}.png", raw_image)
-            else:
-                # pass
-                label = 'silent'
-                if predictions[0] == target:
-                    speaker_prob = predictions[2].max()
-                else:
-                    speaker_prob = predictions[2].min()
-                # cv2.imwrite(f"{output_folder}/{current_speaker}_{label}_{current_time_ms}_{speaker_prob}_{i}.png", input_image_to_model)
-                cv2.imwrite(f"{output_folder}/{current_speaker}_{label}_{current_time_ms}_{speaker_prob}_{i}_raw.png", raw_image)
-        cv2.imwrite(f"{output_folder}/{current_speaker}_{current_time_ms}_frame.png", frames[n//2])
-        print(f"current_speaker: {current_speaker} num_silent: {num_silent} num_speaking: {num_speaking} max_speaker_prob: {max_speaker_prob} min_speaker_prob: {min_speaker_prob} max_speaker_index: {max_speaker_index}")
-        
-        processed_segments += 1
-        if num_segments_to_try is not None and processed_segments >= num_segments_to_try:
-            break
-
-
-
-
-                
-
-
-        
-
-    cap.release()
-    # Close all OpenCV windows
-    cv2.destroyAllWindows()
-
-def get_most_likely_speaker(cap, n=5, use_lips_only=True):
-    '''
-    read n frames and return the most likely speaker
-    parameters:
-        cap: the video capture object, set to the first frame to read
-        n: the number of frames to read
-        use_lips_only: whether to use only the lips for the speaker classification
-    '''
-    potential_speakers = []
-    frames = []
-    for i in range(n):
-        # Read the next frame from the video
-        _, frame = cap.read()
-        if frame is None:
-            return None
-        frames.append(frame)
-        faces = None
-        try:
-            faces = extract_faces_deepface(frame)
-        except Exception as e:
-            print(f"Error: {e}")
-            continue
-        if len(faces) == 0:
-            return None
-        if i == 0:
-            for j in range(len(faces)):
-                # WARNING: we don't store i/which frame here because we only accept n consecutive frames
-                # if that changes then we need to store the frame index, not just the face
-                # TODO: make this use the entities
-                potential_speakers.append([faces[j]])
+        '''
+        comparison = DeepFace.verify(
+            face.facial_embedding, 
+            speaker.get_best_image().facial_embedding, 
+            enforce_detection=False,
+            )
+        if comparison['verified'] and comparison['distance'] < min_distance:
+            best_match_index = i
+            min_distance = comparison['distance']
+    return best_match_index

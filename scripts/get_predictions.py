@@ -27,13 +27,14 @@ def main():
         description='Process input transcript + video, and generate training data for speaker classifier. Run from reduct_face_project dir')
     parser.add_argument('--input_transcript', default='', type=str, 
                         help='input transcript filename')
-    parser.add_argument('--model', default='', type=str, help='default model to use')
+    parser.add_argument('--model', default='models/lips_speaking_model_0_finetune_of_2_random_split.pkl', type=str, help='default model to use')
     parser.add_argument('--video_path', default='', type=str, help='path to video file')
     parser.add_argument('--target', default='speaking', type=str, help='target label class')
     parser.add_argument('--end_time_seconds', default=-1, type=float, help='end time in seconds')
     parser.add_argument('--start_time_seconds', default=-1, type=float, help='start time in seconds')
     parser.add_argument("--output_directory", default="out", type=str, help="output directory of frames")
-    parser.add_argument("--max_segments", default=500, type=int, help="number of segments to try")
+    parser.add_argument("--debug_output_directory", default=None, type=str, help="runs in debug mode when set and outputs to directory")
+    parser.add_argument("--max_segments", default=5000, type=int, help="number of segments to try")
     parser.add_argument("--api_key_yaml", default=None, type=str, help="yaml file with api key")
     parser.add_argument("--doc_id", default="", type=str, help="doc id for reduct")
     args = parser.parse_args()
@@ -70,7 +71,18 @@ def main():
             )
     print("times_and_speakers parsed")
     print(int(args.max_segments))
-    parse_video_for_classifying_speakers(args.video_path, times_and_speakers, model, args.target, args.output_directory, num_segments_to_try=int(args.max_segments))
+    debug_output_directory = args.debug_output_directory
+    debug_mode = debug_output_directory is not None
+    parse_video_for_classifying_speakers(
+        args.video_path, 
+        times_and_speakers, 
+        model, 
+        args.target, 
+        args.output_directory, 
+        num_segments_to_try=int(args.max_segments),
+        debug_mode=debug_mode,
+        debug_mode_output_folder=debug_output_directory,
+        )
     end_time = round(time.time() * 1000)
     print(f"Time taken: {end_time - start_time}ms")
 

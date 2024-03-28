@@ -10,4 +10,10 @@ The above steps are working locally for package authors on python version 3.9.1.
 
 For predicting the faces of every paragraph, you can use the script get_predictions.py, like the example below, in the debug_output_directory we print out a frame and view of speaker face for every frame where a speaking face is found. In the output_directory, we save the most likely face of each paragraph's speaker.
 
-python scripts/get_predictions.py --api_key_yaml api_key.yaml --video_path "../../Downloads/input_video.mp4" --debug_output_directory debug_output --output_directory final_output
+`python scripts/get_predictions.py --api_key_yaml my_api_key.yaml --video_path "../../Downloads/input_video.mp4" --debug_output_directory debug_output --output_directory final_output`
+
+the api_key yaml should include the following section
+`
+reduct_api_key: myapikey
+reduct_organization_id: organizationId_or_email
+`

@@ -1,7 +1,7 @@
 import cv2
 import os
 from deepface import DeepFace
-from parsers.image import (
+from controllers.image import (
     combine_images_horizontally, 
     extract_faces_deepface,
     get_faceai_image,
@@ -159,6 +159,8 @@ def parse_video_for_speakers_middle_n_frames(video_path, transcript_segments, ou
     for segment_info in transcript_segments:
         start_time_ms = segment_info[0] * 1000
         end_time_ms = segment_info[1] * 1000
+        if segment_info[2] is None:
+            segment_info[2] = 'unknown'
         current_speaker = segment_info[2].replace(' ', '_').lower()
         if current_speaker not in speaker_embeddings:
             continue

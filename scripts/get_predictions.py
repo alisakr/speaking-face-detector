@@ -1,5 +1,4 @@
 import argparse
-import os
 import sys
 import time
 import yaml
@@ -8,8 +7,11 @@ sys.path.append('./')
 from fastai.vision.learner import load_learner
 
 from gateways.reduct import *
-from parsers.video.parse_video import *
-from parsers.transcript.parse_transcript import *
+from constants import *
+from controllers.video.parse_video import *
+from controllers.transcript.parse_transcript import *
+from controllers.command_line_args_parser import get_or_create_transcript
+from utils import create_directory_if_not_exists
 
 
 def main():
@@ -37,13 +39,8 @@ def main():
     parser.add_argument("--max_segments", default=5000, type=int, help="number of segments to try")
     parser.add_argument("--api_key_yaml", default=None, type=str, help="yaml file with api key")
     parser.add_argument("--doc_id", default="", type=str, help="doc id for reduct")
+    parser.add_argument("--video_url", default="", type=str, help="url for video, if not local...not yet implemented")
     args = parser.parse_args()
-    api_key = None
-    if args.api_key_yaml:
-        api_file = open(args.api_key_yaml, "r")
-        api_config = yaml.safe_load(api_file)
-        api_file.close()
-        api_key = api_config["api_key"]
     
     if args.start_time_seconds < 0:
         args.start_time_seconds = None
@@ -52,19 +49,10 @@ def main():
     model = load_learner(args.model)
     print("args parsed")
     start_time = round(time.time() * 1000)
-    if api_key:
-        print("api key found")
-        transcript_temp = f'{args.doc_id}_{start_time}_transcript.json'
-        save_transcript(args.doc_id, transcript_temp, api_key_override=api_key, format="json")
-        times_and_speakers = get_times_and_speakers(
-            transcript_temp, 
-            start_time_seconds=args.start_time_seconds, 
-            end_time_seconds=args.end_time_seconds,
-            image_for_each_segment=True,
-            )
-    else:
-        times_and_speakers = get_times_and_speakers(
-            args.input_transcript, 
+    transcript_json = get_or_create_transcript(args)
+    times_and_speakers = get_times_and_speakers(
+            None,
+            transcript_json, 
             start_time_seconds=args.start_time_seconds, 
             end_time_seconds=args.end_time_seconds,
             image_for_each_segment=True,
@@ -73,6 +61,9 @@ def main():
     print(int(args.max_segments))
     debug_output_directory = args.debug_output_directory
     debug_mode = debug_output_directory is not None
+    if debug_mode:
+        create_directory_if_not_exists(debug_output_directory)
+    create_directory_if_not_exists(args.output_directory)
     parse_video_for_classifying_speakers(
         args.video_path, 
         times_and_speakers, 

@@ -159,11 +159,10 @@ def parse_video_for_speakers_middle_n_frames(video_path, transcript_segments, ou
     for segment_info in transcript_segments:
         start_time_ms = segment_info[0] * 1000
         end_time_ms = segment_info[1] * 1000
-        if segment_info[2] is None:
-            segment_info[2] = 'unknown'
-        current_speaker = segment_info[2].replace(' ', '_').lower()
-        if current_speaker not in speaker_embeddings:
-            continue
+        if segment_info[2] is not None:
+            current_speaker = segment_info[2].replace(' ', '_').lower()
+        else:
+            current_speaker = 'unknown'
         # Set the video capture to get n/2 segments prior to the middle, the middle segment and (n/2)-1 after the middle
         num_pre_middle_frames = n // 2
         current_time_ms = (start_time_ms + end_time_ms) / 2

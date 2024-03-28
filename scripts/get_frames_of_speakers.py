@@ -2,8 +2,8 @@ import argparse
 import os
 import sys
 sys.path.append('./')
-from parsers.video.parse_video import *
-from parsers.transcript.parse_transcript import *
+from controllers.video.parse_video import *
+from controllers.transcript.parse_transcript import *
 
 def main():
     parser = argparse.ArgumentParser(

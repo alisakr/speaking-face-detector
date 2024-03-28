@@ -2,7 +2,7 @@ import argparse
 import sys
 sys.path.append('./')
 
-from parsers.image.parse_image import extract_faces_caffemodel, detect_faces_model_v1, save_image
+from controllers.image.parse_image import extract_faces_caffemodel, detect_faces_model_v1, save_image
 
 def main():
     parser = argparse.ArgumentParser(

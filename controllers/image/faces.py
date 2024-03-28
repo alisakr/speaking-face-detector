@@ -2,7 +2,7 @@ import cv2
 from deepface import DeepFace
 from PIL import Image
 from fastai.vision.core import PILImage
-from parsers.image.parse_image import (
+from controllers.image.parse_image import (
     get_part_of_image,
     get_image_n_parts_vertical,
 )

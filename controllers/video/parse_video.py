@@ -1,7 +1,7 @@
 import cv2
 import os
 from deepface import DeepFace
-from parsers.image import (
+from controllers.image import (
     combine_images_horizontally, 
     extract_faces_deepface,
     get_faceai_image,

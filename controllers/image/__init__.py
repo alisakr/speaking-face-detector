@@ -1,2 +1,2 @@
-from parsers.image.faces import *
-from parsers.image.parse_image import *
+from controllers.image.faces import *
+from controllers.image.parse_image import *

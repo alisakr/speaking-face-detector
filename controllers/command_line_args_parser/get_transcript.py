@@ -44,11 +44,13 @@ def get_or_create_transcript(args):
         raise Exception("No doc_id or reduct_organization_id provided")
     elif args.doc_id == "":
         # create project then create doc then upload video
-        random_title_prefix = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
-        title_suffix = datetime.utcnow().strftime(format="%Y_%m_%d_%H_%M_%S_%f")[:-3]
-        response = create_project(f"{random_title_prefix}_{title_suffix}", reduct_organization_id, api_key_override=api_key)
+        random_title_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
+        # use date as the prefix
+        title_prefix = datetime.utcnow().strftime(format="%Y_%m_%d_%H_%M_%S_%f")[:-3]
+        object_name = f"{title_prefix}_{random_title_suffix}"
+        response = create_project(object_name, reduct_organization_id, api_key_override=api_key)
         project_id = response['id'] 
-        response = create_doc_from_file(project_id, f"{random_title_prefix}_{title_suffix}", args.video_path, api_key_override=api_key)
+        response = create_doc_from_file(project_id, object_name, args.video_path, api_key_override=api_key)
         doc_id = response['doc_id']
     else:
         doc_id = args.doc_id

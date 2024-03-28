@@ -18,7 +18,7 @@ env/
 
 # Ignore output of test runs
 output_test*
-out/*
+out*/*
 
 # In case of future need for photos, we can add the following line to make an exception to ignoring photos
 # !project_photos/*.png

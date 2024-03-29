@@ -1,7 +1,6 @@
 import argparse
 import sys
 import time
-import yaml
 sys.path.append('./')
 
 from fastai.vision.learner import load_learner

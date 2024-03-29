@@ -26,7 +26,7 @@ def get_or_create_transcript(args):
     if args.video_path == "":
         raise Exception("No video path provided")
     transcript_json = None
-    if args.input_transcript != "":
+    if args.input_transcript is not None and args.input_transcript != "":
         transcript_json = None
         with open(args.input_transcript, "r") as f:
             transcript_json = f.read()

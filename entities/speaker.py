@@ -46,6 +46,7 @@ class Speaker:
         if self.best_image_index is None:
             return None
         self._facial_images = [self._facial_images[self.best_image_index]]
+        self.best_image_index = 0
         return self._facial_images[0]
     
     def get_facial_images(self):

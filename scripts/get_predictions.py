@@ -28,7 +28,7 @@ def main():
         description='Process input transcript + video, and generate training data for speaker classifier. Run from reduct_face_project dir')
     parser.add_argument('--input_transcript', default='', type=str, 
                         help='input transcript filename')
-    parser.add_argument('--model', default='models/lips_speaking_model_0_finetune_of_2_random_split.pkl', type=str, help='default model to use')
+    parser.add_argument('--model', default=constants.default_speaking_model, type=str, help='model to use')
     parser.add_argument('--video_path', default='', type=str, help='path to video file')
     parser.add_argument('--target', default='speaking', type=str, help='target label class')
     parser.add_argument('--end_time_seconds', default=-1, type=float, help='end time in seconds')

@@ -104,3 +104,15 @@ def get_part_of_image(area, frame, expand_percent=0):
     # height
     h = min(area['h']+int(area['h']*expand_percent), frame.shape[0]-y)
     return frame[y:y+h, x:x+w]
+
+def diff_image_structures(image1, image2):
+    # Compare two images and return the difference
+    # Parameters:
+    # image1 (numpy.ndarray): The first image
+    # image2 (numpy.ndarray): The second image
+    # Returns:
+    # numpy.ndarray: The difference between the two images
+    gray1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+    gray2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+    mse_over_max_sq = np.mean((gray1 - gray2) ** 2)/255**2
+    return np.sqrt(mse_over_max_sq)

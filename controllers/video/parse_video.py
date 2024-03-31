@@ -2,7 +2,8 @@ import cv2
 import os
 from deepface import DeepFace
 from controllers.image import (
-    combine_images_horizontally, 
+    combine_images_horizontally,
+    diff_image_structures, 
     extract_faces_deepface,
     get_faceai_image,
     get_image_from_facial_image_object,
@@ -270,7 +271,7 @@ def parse_video_for_classifying_speakers(
         debug_mode=False,
         debug_mode_output_folder=None,
         use_lips_only=True,
-        target_probability_threshold=0.8,
+        target_probability_threshold=0.5,
         ):
     '''
     testing out how to find the speaker
@@ -310,31 +311,44 @@ def parse_video_for_classifying_speakers(
         if speaker_num_matched_words[current_speaker] > per_speaker_cap:
             continue
         # Set the video capture to get n/2 segments prior to the middle, the middle segment and (n/2)-1 after the middle
-        num_pre_middle_frames = n // 2
+        # since we skip frames, should be 2*n - 1 // 2
+        num_pre_middle_frames = (2 * n - 1) // 2
         current_time_ms = (start_time_ms + end_time_ms) / 2
         current_time_ms -= num_pre_middle_frames * time_per_frame_ms
         cap.set(cv2.CAP_PROP_POS_MSEC, current_time_ms)
-        speaker, speaker_prob = get_most_likely_speaker(
+        
+        speakers_by_probability = get_speakers_by_probability(
             cap, 
             model, 
             target, 
-            num_frames=n, 
             use_lips_only=use_lips_only,
-            target_probability_threshold=target_probability_threshold,
         )
-        if speaker is None:
+        if len(speakers_by_probability) == 0 or speakers_by_probability[0][1][1] < target_probability_threshold:
             speaker_num_unmatched_words[current_speaker] += 1
             if debug_mode:
                 print(f"Could not find a speaker for segment of {current_speaker} at time {current_time_ms}")
             continue
+        speaker = speakers_by_probability[0][0]
+        speaker_prob = speakers_by_probability[0][1][1]
         speaker_num_matched_words[current_speaker] += 1
         speaker.name = current_speaker
         if debug_mode:
-            print(f"Speaker: {speaker.name}, Probability: {speaker_prob}")
-            raw_image = combine_images_horizontally(output_filename=None, images_in_memory_copy=[
-                get_image_from_facial_image_object(facial_image) for facial_image in speaker.get_facial_images()])
-            label = target
-            cv2.imwrite(f"{debug_mode_output_folder}/{current_speaker}_{label}_{current_time_ms}_{speaker_prob}_raw.png", raw_image)
+            c = 0
+            for any_speaker, any_speaker_prob in speakers_by_probability:
+                speaker_prob_middle = any_speaker_prob[1]
+
+                print(f"Speaker: {any_speaker.name}, Probability: {speaker_prob_middle}")
+                image_parts = [get_image_from_facial_image_object(facial_image) for facial_image in any_speaker.get_facial_images()]
+                raw_image = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts)
+                raw_image = get_image_n_parts_vertical(image_in_memory_copy=raw_image, n=3)[-1]
+                label = target
+                filename = f"{output_folder}/{current_speaker}_{label}_{current_time_ms}_{c}_{any_speaker_prob[0]}_{any_speaker_prob[1]}_{any_speaker_prob[2]}_{any_speaker_prob[3]}"
+                filename += f"_{any_speaker_prob[4]}_{any_speaker_prob[5]}_{any_speaker_prob[6]}_raw.png"
+                print(f"Saving image to {filename}")
+                cv2.imwrite(filename, raw_image)
+                c += 1
+            print(f"current_time_ms: {current_time_ms}")
+            print(f"speaker: {speaker}")
             cv2.imwrite(f"{debug_mode_output_folder}/{current_speaker}_{current_time_ms}_frame.png", speaker.get_best_image().frame)
        
         
@@ -386,28 +400,40 @@ def parse_video_for_classifying_speakers(
     # Close all OpenCV windows
     cv2.destroyAllWindows()
 
-def get_most_likely_speaker(cap, model, target, num_frames=5, use_lips_only=True, target_probability_threshold=0.8):
+def get_speakers_by_probability(cap, model, target, use_lips_only=True):
     '''
-    read num_frames frames and return the most likely speaker of a single word
+    read num_frames frames and returns potenial speakers ordered by descending speaker probability
     parameters:
         cap: the video capture object, set to the first frame to read
         model: the model to use for speaker classification
         target: the target label to maximize for speaker classification
-        n: the number of frames to read
+        num_frames: the number of frames to save
         use_lips_only: whether to use only the lips for the speaker classification (default: True)
+        skip_frames: the number of frames to skip in between each read frame (default: 0)
+    returns:
+        structured numpy 2d array of potential speaker and all attributes for predicting their liklelihood of being the speaker.
     '''
     potential_speakers = []
     frames = []
+    num_frames = 9
+    num_input_frames_to_model = 5
     for i in range(num_frames):
         # Read the next frame from the video
         _, frame = cap.read()
         if frame is None:
             return None
+
+        
         frames.append(frame)
         faces = None
         try:
             faces = extract_faces_deepface(frame)
-            faces = [FacialImage(face, frame) for face in faces]
+            face_objects = []
+            for face in faces:
+                if face[deepface_confidence_key] < face_recognition_threshold:
+                    continue
+                face_objects.append(FacialImage(face, frame))
+            faces = face_objects
         except Exception as e:
             print(f"Error: {e}")
             continue
@@ -422,12 +448,10 @@ def get_most_likely_speaker(cap, model, target, num_frames=5, use_lips_only=True
                 potential_speaker = Speaker("", [face])
                 potential_speakers.append(potential_speaker)
         else:
-            matched_new_faces = set()
             matched_speakers = []
             for speaker in potential_speakers:
                 best_match_index = find_best_match_to_speaker(speaker, faces)
                 if best_match_index is not None:
-                    matched_new_faces.add(best_match_index)
                     matched_speakers.append(speaker)
                     speaker.add_image(faces[best_match_index])
                     faces.pop(best_match_index)
@@ -438,25 +462,58 @@ def get_most_likely_speaker(cap, model, target, num_frames=5, use_lips_only=True
     pre_model_transforms = [get_image_from_facial_image_object]
     if use_lips_only:
         pre_model_transforms.append(get_lips_from_image_of_face)
-    most_likely_speaker = None
-    speaker_prob = 0
+    speakers_ordered_by_prob = []
+    
     for speaker in potential_speakers:
         image_parts = []
-        for facial_image in speaker.get_facial_images():
+        speaker_attributes = []
+        lip_change_frame_by_frame = 0.0
+        confidence = 0.0
+        facial_area_size = 0.0
+        num_faces = len(speaker.get_facial_images())
+        for i, facial_image in enumerate(speaker.get_facial_images()):
             image_part = facial_image
             for transform in pre_model_transforms:
                 image_part = transform(image_part)
-            image_parts.append(image_part)
-        input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts)
-        predictions = model.predict(get_faceai_image(input_image_to_model))
-        if predictions[0] != target:
-            continue
-        if predictions[2].max() < target_probability_threshold:
-            continue
-        if predictions[2].max() > speaker_prob:
-            speaker_prob = predictions[2].max()
-            most_likely_speaker = speaker
-    return most_likely_speaker, speaker_prob
+            image_parts.append(cv2.resize(image_part, (100, 100)))
+            confidence += facial_image.confidence
+            facial_area_size += facial_image.get_facial_area_size()/(facial_image.frame.shape[0]*facial_image.frame.shape[1])
+            if len(image_parts) == 1:
+                continue
+            lip_change_frame_by_frame += diff_image_structures(image_parts[i-1], image_parts[i])
+            
+            
+        facial_area_size /= num_faces
+        confidence /= num_faces
+        
+
+            
+        lip_movement_start_to_end = diff_image_structures(image_parts[0], image_parts[-1])
+        start_input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts[:num_input_frames_to_model])
+        # get frames in the middle, [2:7]
+        middle_input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts[2:2+num_input_frames_to_model])
+        end_input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts[-num_input_frames_to_model:])
+        # example output of model.predict: ('speaking', tensor(1), tensor([0.0787, 0.9213]))
+        predictions_start = model.predict(get_faceai_image(start_input_image_to_model))
+        predictions_middle = model.predict(get_faceai_image(middle_input_image_to_model))
+        predictions_end = model.predict(get_faceai_image(end_input_image_to_model))
+        predictions = [predictions_start, predictions_middle, predictions_end]
+
+        for prediction in predictions:
+            if prediction[0] == target:
+                speaker_attributes.append(prediction[2].max())
+            else:
+                speaker_attributes.append(prediction[2].min())
+        
+        speaker_attributes.extend([
+            lip_change_frame_by_frame, 
+            lip_movement_start_to_end, 
+            confidence, 
+            facial_area_size,
+            ])
+        speakers_ordered_by_prob.append((speaker, speaker_attributes))
+    speakers_ordered_by_prob = sorted(speakers_ordered_by_prob, key=lambda x: x[1][1], reverse=True)
+    return speakers_ordered_by_prob
 
 
 

@@ -11,3 +11,5 @@ class FacialImage:
         self.confidence = deepface_result[deepface_confidence_key]
         self.facial_area = deepface_result[deepface_facial_area_key]
         self.frame = frame
+    def get_facial_area_size(self):
+        return self.facial_area['w'] * self.facial_area['h']

@@ -1,6 +1,12 @@
-import cv2
 import os
+import time
+
+import cv2
 from deepface import DeepFace
+import numpy as np
+import pandas as pd
+
+
 from controllers.image import (
     combine_images_horizontally,
     diff_image_structures, 
@@ -16,6 +22,7 @@ from constants import (
     deepface_embedding_key,
     deepface_confidence_key,
     face_recognition_threshold,
+    speaker_probability_columns,
 )
 from entities.facial_image import FacialImage
 from entities.speaker import Speaker
@@ -130,25 +137,8 @@ def parse_video_for_speakers_middle_n_frames(video_path, transcript_segments, ou
     if not cap.isOpened():
         print("Error: Could not open video file")
         exit()
-    # speaker name 
-    speaker_embeddings = {}
-    for image_file in speaker_image_files:
-        filename_parts = image_file.split('/')
-        speaker = filename_parts[-1].split('.')[0]
-        # each speaker face image should have exactly one face
-        extracted_faces = extract_faces_deepface(image_file)
-        extracted_face = None
-        for face in extracted_faces:
-            if face[deepface_confidence_key] < 0.8:
-                print(f"Warning: Detected face with confidence less than 0.8 in {image_file}")
-                continue
-            if face['facial_area']['left_eye'] is None or face['facial_area']['right_eye'] is None:
-                continue 
-            extracted_face = face
-            break
-        if extracted_face is None:
-            raise Exception(f"Error: Could not find a face in {image_file}")
-        speaker_embeddings[speaker.replace(' ', '_').lower()] = extracted_face[deepface_embedding_key]
+    # speaker name to speaker embedding map
+    speaker_embeddings = get_speaker_embeddings(speaker_image_files)
     # Get the total number of frames in the video
     num_frames_input = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -316,11 +306,14 @@ def parse_video_for_classifying_speakers(
         current_time_ms = (start_time_ms + end_time_ms) / 2
         current_time_ms -= num_pre_middle_frames * time_per_frame_ms
         cap.set(cv2.CAP_PROP_POS_MSEC, current_time_ms)
-        
+        # example output of model.predict: ('speaking', tensor(1), tensor([0.0787, 0.9213]))
+        # another example output of model.predict: ('silent', tensor(0), tensor([0.9909, 0.0091]))
+        # therefore speaking probability is alwasy at index 1 / second item
+        target_index = 1
         speakers_by_probability = get_speakers_by_probability(
             cap, 
             model, 
-            target, 
+            target_index, 
             use_lips_only=use_lips_only,
         )
         if len(speakers_by_probability) == 0 or speakers_by_probability[0][1][1] < target_probability_threshold:
@@ -392,21 +385,171 @@ def parse_video_for_classifying_speakers(
             output_filename = f"{output_folder}/word_count_{speaker_name}_{max_matched_words}_{max_probability}.png"
             face_output = get_image_from_facial_image_object(best_speaker_on_word_count.get_best_image(), padding=25)
             cv2.imwrite(output_filename, face_output)
-
-                
-        
-
+              
     cap.release()
     # Close all OpenCV windows
     cv2.destroyAllWindows()
 
-def get_speakers_by_probability(cap, model, target, use_lips_only=True):
+def parse_video_for_matrix_data(
+        video_path, 
+        transcript_segments, 
+        model, 
+        speaker_image_files,
+        result_output_csv,
+        n=5, 
+        use_lips_only=True,
+        only_use_words_with_known_speakers=True,
+        output_image_folder=None,
+        ):
+    '''
+    testing out how to find the speaker
+    parameters:
+        video_path (str): path to the video file
+        transcript_segments (list of tuples): each tuple contains the start time, end time and speaker name
+        model: the model or list of models to use for filtering to the desired faces, each model 
+        target: the target label or list of targets to use for filtering to the desired faces, each target is a string or list of strings
+        output_folder (str): the output folder to save the frames
+
+    '''
+    print("segment processing begins")
+    cap = cv2.VideoCapture(video_path)
+    # Check if the video file opened successfully
+    if not cap.isOpened():
+        print("Error: Could not open video file")
+        exit()
+    unique_speakers = set([segment[2] for segment in transcript_segments])
+    print(f"Unique speakers: {len(unique_speakers)}")
+    start_video_time = round(time.time() * 1000)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    time_per_frame_ms = 1000 / fps
+    # speaker name to speaker embedding map
+    speaker_embeddings = get_speaker_embeddings(speaker_image_files)
+    result_matrix = []
+    chunk_size = 20
+    num_written_to_csv = 0
+    num_words_missed = 0
+    num_words_processed = 0
+    columns = speaker_probability_columns + ['speaker_match']
+
+    for i in range(len(speaker_probability_columns)):
+        columns.append("frame_max_" + columns[i])
+    for i in range(len(speaker_probability_columns)):
+        columns.append("frame_min_" + columns[i])
+    for i in range(len(speaker_probability_columns)):
+        columns.append("frame_mean_" + columns[i])
+    
+    for segment_info in transcript_segments:
+        # Step 1: get speaker, time.
+        start_time_ms = segment_info[0] * 1000
+        end_time_ms = segment_info[1] * 1000
+        current_speaker = segment_info[2]
+        if only_use_words_with_known_speakers and current_speaker is None:
+            continue
+        # Set the video capture to get n/2 segments prior to the middle, the middle segment and (n/2)-1 after the middle
+        # since we skip frames, should be 2*n - 1 // 2
+        num_pre_middle_frames = (2 * n - 1) // 2
+        current_time_ms = (start_time_ms + end_time_ms) / 2
+        current_time_ms -= num_pre_middle_frames * time_per_frame_ms
+        cap.set(cv2.CAP_PROP_POS_MSEC, current_time_ms)
+        # example output of model.predict: ('speaking', tensor(1), tensor([0.0787, 0.9213]))
+        # another example output of model.predict: ('silent', tensor(0), tensor([0.9909, 0.0091]))
+        # therefore speaking probability is alwasy at index 1 / second item
+        target_index = 1
+        speakers_by_probability = get_speakers_by_probability(
+            cap, 
+            model, 
+            target_index, 
+            use_lips_only=use_lips_only,
+        )
+        found_speaker = False
+        result_temp = []
+        skip_term = False
+        if speakers_by_probability is None:
+            print(f"Warning: NO faces for the word {segment_info[3]}_{segment_info[2]}_{segment_info[0]}_{segment_info[1]}")
+            num_words_missed += 1
+            continue
+        for speaker_for_word, speaker_attributes in speakers_by_probability:
+            # check if speaker is the speaker for the word
+            # if so, append 1, else append 0
+            # then append speaker_attributes to the matrix
+            speaker_for_word_image = speaker_for_word.get_best_image()
+            expected_speaker_embedding = speaker_embeddings[current_speaker]
+            compare_to_speaker = DeepFace.verify(
+                        speaker_for_word_image.facial_embedding, 
+                        expected_speaker_embedding, 
+                        enforce_detection=False,
+                        )
+            if compare_to_speaker['verified']:
+                speaker_match = 1
+                if found_speaker:
+                    print(f"Warning: Found multiple speakers for the same word {segment_info[3]}_{segment_info[2]}_{segment_info[0]}_{segment_info[1]}")
+                    skip_term = True
+                    break
+                found_speaker = True
+            else:
+                speaker_match = 0
+            result_temp.append(speaker_attributes + [speaker_match])
+            if output_image_folder is not None:
+                filename = f"{output_image_folder}/{start_video_time}_{len(result_matrix)+len(result_temp)-1}.png"
+                cv2.imwrite(filename, get_image_from_facial_image_object(speaker_for_word_image, padding=25))
+        if not found_speaker:
+            print(f"Warning: Could not find a speaker for the word {segment_info[3]}_{segment_info[2]}_{segment_info[0]}_{segment_info[1]}")
+            num_words_missed += 1
+            continue
+        if skip_term:
+            num_words_missed += 1
+            continue
+        numpy_temp = np.array(result_temp)
+        max_vals_by_column = np.max(numpy_temp, axis=0)[:len(speaker_probability_columns)]
+        max_tiled = np.tile(max_vals_by_column, (numpy_temp.shape[0], 1))
+        min_vals_by_column = np.min(numpy_temp, axis=0)[:len(speaker_probability_columns)]
+        min_tiled = np.tile(min_vals_by_column, (numpy_temp.shape[0], 1))
+        mean_vals_by_column = np.mean(numpy_temp, axis=0)[:len(speaker_probability_columns)]
+        mean_tiled = np.tile(mean_vals_by_column, (numpy_temp.shape[0], 1))
+        numpy_temp = np.concatenate((numpy_temp, max_tiled, min_tiled, mean_tiled), axis=1)
+                
+        num_words_processed += 1
+        if len(result_matrix) == 0:
+            result_matrix = numpy_temp
+        else:
+            result_matrix = np.concatenate((result_matrix, numpy_temp), axis=0)
+        if result_output_csv is not None and len(result_matrix)-num_written_to_csv >= chunk_size:
+            print(f"Num written to csv: {num_written_to_csv}")
+            df = pd.DataFrame(result_matrix[num_written_to_csv:], columns=columns)
+            if num_written_to_csv == 0:
+                header = True
+            else:
+                header = False
+            df.to_csv("temp_" + result_output_csv, mode='a', header=header, index=False)
+            num_written_to_csv = len(result_matrix)
+
+    if result_output_csv is not None and len(result_matrix) > num_written_to_csv:
+        df = pd.DataFrame(result_matrix[num_written_to_csv:], columns=columns)
+        if num_written_to_csv == 0:
+            header = True
+        else:
+            header = False
+        df.to_csv("temp_" + result_output_csv, mode='a', header=header, index=False)
+
+    print(f"Number of words processed: {num_words_processed}")
+    print(f"Number of words missed: {num_words_missed}")
+    cap.release()
+    # Close all OpenCV windows
+    cv2.destroyAllWindows()
+    df = pd.DataFrame(result_matrix, columns=columns)
+    df.to_csv(result_output_csv, mode='w', header=True, index=False)
+    return result_matrix
+       
+    
+
+
+def get_speakers_by_probability(cap, model, target_index, use_lips_only=True):
     '''
     read num_frames frames and returns potenial speakers ordered by descending speaker probability
     parameters:
         cap: the video capture object, set to the first frame to read
         model: the model to use for speaker classification
-        target: the target label to maximize for speaker classification
+        target_index: the index in the predictiosns tensor of the target label to maximize for classification
         num_frames: the number of frames to save
         use_lips_only: whether to use only the lips for the speaker classification (default: True)
         skip_frames: the number of frames to skip in between each read frame (default: 0)
@@ -471,6 +614,13 @@ def get_speakers_by_probability(cap, model, target, use_lips_only=True):
         confidence = 0.0
         facial_area_size = 0.0
         num_faces = len(speaker.get_facial_images())
+        start_frames = (0, 4)
+        middle_frames = (2, 6)
+        end_frames = (4, 8)
+        frame_ranges = [start_frames, middle_frames, end_frames]
+        # lip movements for each 5 frame set, (start, middle, and end)
+        lip_movement_totals_by_part = [0.0, 0.0, 0.0]
+        lip_frame_by_frame_change_by_part = [0.0, 0.0, 0.0]
         for i, facial_image in enumerate(speaker.get_facial_images()):
             image_part = facial_image
             for transform in pre_model_transforms:
@@ -480,37 +630,47 @@ def get_speakers_by_probability(cap, model, target, use_lips_only=True):
             facial_area_size += facial_image.get_facial_area_size()/(facial_image.frame.shape[0]*facial_image.frame.shape[1])
             if len(image_parts) == 1:
                 continue
-            lip_change_frame_by_frame += diff_image_structures(image_parts[i-1], image_parts[i])
+            frame_change = diff_image_structures(image_parts[i-1], image_parts[i])
+            for j, frame_range in enumerate(frame_ranges):
+                if i > frame_range[0] and i <= frame_range[1]:
+                    lip_frame_by_frame_change_by_part[j] += frame_change
+                if i == frame_range[1]:
+                    lip_movement_totals_by_part[j] = diff_image_structures(image_parts[frame_range[0]], image_parts[frame_range[1]])
+            lip_change_frame_by_frame += frame_change
             
             
         facial_area_size /= num_faces
         confidence /= num_faces
         
-
-            
-        lip_movement_start_to_end = diff_image_structures(image_parts[0], image_parts[-1])
+        lip_movement_start_to_end = lip_movement_totals_by_part[0] + lip_movement_totals_by_part[2]
         start_input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts[:num_input_frames_to_model])
         # get frames in the middle, [2:7]
         middle_input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts[2:2+num_input_frames_to_model])
         end_input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts[-num_input_frames_to_model:])
         # example output of model.predict: ('speaking', tensor(1), tensor([0.0787, 0.9213]))
+        # another example output of model.predict: ('silent', tensor(0), tensor([0.9909, 0.0091]))
+        # therefore speaking probability is alwasy at index 1 / second item
         predictions_start = model.predict(get_faceai_image(start_input_image_to_model))
+        speaker_attributes.append(predictions_start[2][target_index].item())
         predictions_middle = model.predict(get_faceai_image(middle_input_image_to_model))
+        speaker_attributes.append(predictions_middle[2][target_index].item())
         predictions_end = model.predict(get_faceai_image(end_input_image_to_model))
-        predictions = [predictions_start, predictions_middle, predictions_end]
-
-        for prediction in predictions:
-            if prediction[0] == target:
-                speaker_attributes.append(prediction[2].max())
-            else:
-                speaker_attributes.append(prediction[2].min())
-        
-        speaker_attributes.extend([
-            lip_change_frame_by_frame, 
-            lip_movement_start_to_end, 
-            confidence, 
+        speaker_attributes.append(predictions_end[2][target_index].item())
+        speaker_attributes = [
+            predictions_start[2][1].item(),
+            predictions_middle[2][1].item(),
+            predictions_end[2][1].item(),
+            lip_change_frame_by_frame,
+            lip_movement_start_to_end,
+            lip_frame_by_frame_change_by_part[0],
+            lip_movement_totals_by_part[0],
+            lip_frame_by_frame_change_by_part[1],
+            lip_movement_totals_by_part[1],
+            lip_frame_by_frame_change_by_part[2],
+            lip_movement_totals_by_part[2],
+            confidence,
             facial_area_size,
-            ])
+        ]
         speakers_ordered_by_prob.append((speaker, speaker_attributes))
     speakers_ordered_by_prob = sorted(speakers_ordered_by_prob, key=lambda x: x[1][1], reverse=True)
     return speakers_ordered_by_prob
@@ -564,3 +724,28 @@ def find_best_match_to_speaker(speaker, faces):
             best_match_index = i
             min_distance = comparison['distance']
     return best_match_index
+
+def get_speaker_embeddings(speaker_image_files):
+    '''
+    get the speaker embeddings from the speaker image files
+    parameters:
+        speaker_image_files: the list of speaker image files'''
+    speaker_embeddings = {}
+    for image_file in speaker_image_files:
+        filename_parts = image_file.split('/')
+        speaker = filename_parts[-1].split('.')[0]
+        # each speaker face image should have exactly one face
+        extracted_faces = extract_faces_deepface(image_file)
+        extracted_face = None
+        for face in extracted_faces:
+            if face[deepface_confidence_key] < 0.8:
+                print(f"Warning: Detected face with confidence less than 0.8 in {image_file}")
+                continue
+            if face['facial_area']['left_eye'] is None or face['facial_area']['right_eye'] is None:
+                continue 
+            extracted_face = face
+            break
+        if extracted_face is None:
+            raise Exception(f"Error: Could not find a face in {image_file}")
+        speaker_embeddings[speaker.replace(' ', '_').lower()] = extracted_face[deepface_embedding_key]
+    return speaker_embeddings

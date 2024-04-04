@@ -21,7 +21,7 @@ def get_times_and_speakers(
             transcript_json = json.load(f)
     # expected json structure: {"segments": [
     #                               {
-    #                                   "wdlist":[{"start": 0.0, "end": 0.5},...], 
+    #                                   "wdlist":[{"start": 0.0, "end": 0.5, "word": "hi"},...], 
     #                                   speaker_key: "s1"}, ...
     #                                   ]
     #                            }      
@@ -54,5 +54,5 @@ def get_times_and_speakers(
             if start_time_seconds is not None and end < start_time_seconds:
                 continue
             prior_end = end
-            times_and_speakers.append((start, end, speaker))
+            times_and_speakers.append((start, end, speaker, wd['word']))
     return times_and_speakers

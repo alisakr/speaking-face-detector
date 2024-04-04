@@ -2,10 +2,14 @@ import cv2
 from deepface import DeepFace
 from PIL import Image
 from fastai.vision.core import PILImage
+
+
+from constants import deepface_confidence_key
 from controllers.image.parse_image import (
     get_part_of_image,
     get_image_n_parts_vertical,
 )
+from entities.facial_image import FacialImage
 
 
 def extract_faces_deepface(image):
@@ -49,3 +53,12 @@ def get_image_from_facial_image_object(facial_image_object, padding=0):
 def get_lips_from_image_of_face(face_image):
     # assume lips to be in the bottom third of the face
     return get_image_n_parts_vertical(image_in_memory_copy=face_image, n=3)[-1]
+
+def extract_faces_as_face_objects(frame, face_recognition_threshold=None):
+    deepface_faces = extract_faces_deepface(frame)
+    face_objects = []
+    for face in deepface_faces:
+        if face_recognition_threshold is not None and face[deepface_confidence_key] < face_recognition_threshold:
+            continue
+        face_objects.append(FacialImage(face, frame))
+    return face_objects

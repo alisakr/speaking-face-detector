@@ -26,7 +26,7 @@ def get_or_create_transcript(args):
     if args.video_path == "":
         raise Exception("No video path provided")
     transcript_json = None
-    if args.input_transcript is not None and args.input_transcript != "":
+    if hasattr(args, "input_transcript") and args.input_transcript is not None and args.input_transcript != "":
         transcript_json = None
         with open(args.input_transcript, "r") as f:
             transcript_json = f.read()
@@ -66,7 +66,7 @@ def get_or_create_transcript(args):
         if (datetime.utcnow() - start_time).total_seconds() > max_wait_for_transcript_seconds:
             raise Exception("Transcript took too long to transcribe")
         #TODO: get the failed status of the transcript
-        print(f"Transcript not ready yet, status={status}, waiting 5 seconds")
+        print(f"Transcript not ready yet, status={status}, retrying in 5 seconds")
         # sleep for 5 seconds
         time.sleep(5)
     # get the transcript now that it is transcribed

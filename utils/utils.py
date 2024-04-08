@@ -1,4 +1,6 @@
 import os
+import random
+import string
 
 
 def create_directory_if_not_exists(directory_path):
@@ -24,3 +26,6 @@ def two_columns_equal(row, column1, column2):
     if row[column1] == row[column2]:
         return 1.0
     return 0.0
+
+def generate_random_string(n):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=n))

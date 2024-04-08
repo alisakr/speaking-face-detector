@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+import csv
 sys.path.append('./')
 
 from controllers.transcript.parse_transcript import *
@@ -29,6 +30,7 @@ def main():
     parser.add_argument("--debug_output_directory", default=None, type=str, help="runs in debug mode when set and outputs to directory")
     parser.add_argument("--api_key_yaml", default=None, type=str, help="yaml file with api key")
     parser.add_argument("--doc_id", default="", type=str, help="doc id for reduct")
+    parser.add_argument("--segments_csv", default=None, type=str, help="segment csv file")
 
     args = parser.parse_args()
     
@@ -46,11 +48,16 @@ def main():
             end_time_seconds=args.end_time_seconds,
             )
     print(times_and_speakers)
-
     create_directory_if_not_exists(args.output_directory)
     print("directory created")
     predictor = SpeakerWordPredictor()
     transcript = Transcript(transcript_json, times_and_speakers)
+    if args.segments_csv is not None:
+        with open(args.segments_csv, 'w') as f:
+            writer = csv.writer(f)
+            writer.writerow(["start_time", "end_time", "speaker", "word"])
+            writer.writerows(transcript.segments)
+
     video = VideoPredictor(args.video_path, transcript)
     predictor.predict_speaker_words(video, args.output_directory, "")
 

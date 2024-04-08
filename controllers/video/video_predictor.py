@@ -18,6 +18,9 @@ class VideoPredictor:
         if not self.cap.isOpened():
             raise Exception("Error: Could not open video file")
         self.video_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if int(self.video_fps) != 30:
+            raise Exception(
+                f"Error: only 30 frames per second videos are supported currently, video fps={self.video_fps}")
         self.num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
     def close_video(self):

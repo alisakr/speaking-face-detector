@@ -6,6 +6,8 @@ from deepface import DeepFace
 import numpy as np
 import pandas as pd
 
+from utils import generate_random_string
+
 
 from controllers.image import (
     combine_images_horizontally,
@@ -131,7 +133,9 @@ def parse_video_for_speakers_middle_n_frames(video_path, transcript_segments, ou
     plan is simple - get the faces in the middle n frames of each segment, concatenate them horizontally and save them
     
     '''
-
+    # generate a random string to append to the output filename
+    # in order to avoid collision with existing files
+    output_file_suffix = generate_random_string(5)
     cap = cv2.VideoCapture(video_path)
     # Check if the video file opened successfully
     if not cap.isOpened():
@@ -144,7 +148,8 @@ def parse_video_for_speakers_middle_n_frames(video_path, transcript_segments, ou
     fps = cap.get(cv2.CAP_PROP_FPS)
     time_per_frame_ms = 1000 / fps
     print(f"Total number of frames in the video: {num_frames_input}")
-    print(f"Number of frames per second: {fps}")
+    if int(fps) != 30:
+        raise Exception(f"Error: only 30 frames per second videos are supported currently, video fps={fps}")
     num_printed = 0
     # using fps and n get the middle time frames
     for segment_info in transcript_segments:
@@ -155,9 +160,14 @@ def parse_video_for_speakers_middle_n_frames(video_path, transcript_segments, ou
         else:
             current_speaker = 'unknown'
         # Set the video capture to get n/2 segments prior to the middle, the middle segment and (n/2)-1 after the middle
-        num_pre_middle_frames = n // 2
-        current_time_ms = (start_time_ms + end_time_ms) / 2
-        current_time_ms -= num_pre_middle_frames * time_per_frame_ms
+        #num_pre_middle_frames = n // 2
+        #current_time_ms = (start_time_ms + end_time_ms) / 2
+        #current_time_ms -= num_pre_middle_frames * time_per_frame_ms
+        if end_time_ms - start_time_ms < (n+1) * time_per_frame_ms:
+            continue
+        current_time_ms = start_time_ms
+        if current_time_ms < 0:
+            current_time_ms = 0
         cap.set(cv2.CAP_PROP_POS_MSEC, current_time_ms)
         faces_by_person = []
         frames = []
@@ -241,7 +251,7 @@ def parse_video_for_speakers_middle_n_frames(video_path, transcript_segments, ou
             # now we concatenate the frames horizontally, we should test in kaggle how best to do that
             # do we need to resize the frames to be the same size?
             image_parts = [get_facial_area_adjusted(frame_face[1]['facial_area'], frames[frame_face[0]]) for frame_face in face_finds]
-            output_filename = f"{output_folder}/{output_dir}/{matching_speaker}_{current_time_ms}.png"
+            output_filename = f"{output_folder}/{output_dir}/{matching_speaker}_{current_time_ms}_{output_file_suffix}.png"
             combine_images_horizontally(output_filename=output_filename, images_in_memory_copy=image_parts)
 
 
@@ -329,7 +339,6 @@ def parse_video_for_classifying_speakers(
             c = 0
             for any_speaker, any_speaker_prob in speakers_by_probability:
                 speaker_prob_middle = any_speaker_prob[1]
-
                 print(f"Speaker: {any_speaker.name}, Probability: {speaker_prob_middle}")
                 image_parts = [get_image_from_facial_image_object(facial_image) for facial_image in any_speaker.get_facial_images()]
                 raw_image = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts)
@@ -491,7 +500,7 @@ def parse_video_for_matrix_data(
             result_temp.append(speaker_attributes + [speaker_match])
             if output_image_folder is not None:
                 filename = f"{output_image_folder}/{start_video_time}_{len(result_matrix)+len(result_temp)-1}.png"
-                cv2.imwrite(filename, get_image_from_facial_image_object(speaker_for_word_image, padding=25))
+                cv2.imwrite(filename, get_image_from_facial_image_object(speaker_for_word_image, padding=0))
         if not found_speaker:
             print(f"Warning: Could not find a speaker for the word {segment_info[3]}_{segment_info[2]}_{segment_info[0]}_{segment_info[1]}")
             num_words_missed += 1

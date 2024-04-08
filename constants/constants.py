@@ -9,7 +9,8 @@ reduct_api_key = 'reduct_api_key'
 reduct_organization_key = 'reduct_organization_id'
 reduct_transcript_complete_status = "transcribed"
 default_random_forest_model = 'models/random_forest_all_data_regressor_500_forests_50_min_leaf_91_accuracy_44_of_48_at_threshold_of_50_percent_split_15.pkl'
-default_speaking_model = 'models/clean_briahna_2_krystal_kyle_eugene_emma_4_sunday_2_obstructed_lips_even_split_finetune_of_4.pkl'
+#default_speaking_model = 'models/clean_briahna_2_krystal_kyle_eugene_emma_4_sunday_2_obstructed_lips_even_split_finetune_of_4.pkl'
+default_speaking_model = 'models/lips_speaking_model_0_finetune_of_2_random_split.pkl'
 
 # number of frames to read from video for every word in transcript
 num_frames_to_read = 9

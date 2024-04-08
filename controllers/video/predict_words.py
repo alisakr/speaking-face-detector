@@ -1,5 +1,6 @@
 from functools import partial
 import pickle
+import time
 
 import cv2
 from deepface import DeepFace
@@ -34,21 +35,24 @@ from utils import (
 
 
 class SpeakerWordPredictor:
-    def __init__(self, image_model=None, random_forest_model=None):
+    def __init__(self, image_model=None, random_forest_model=None, image_model_only=False):
         if image_model is None:
             self.image_model = load_learner(default_speaking_model)
         elif isinstance(image_model, str):
             self.image_model = load_learner(image_model)
         else:
             self.image_model = image_model
-        if random_forest_model is None:
-            with open(default_random_forest_model, 'rb') as file:
-                self.random_forest_model = pickle.load(file)
-        elif isinstance(random_forest_model, str):
-            with open(random_forest_model, 'rb') as file:
-                self.random_forest_model = pickle.load(file)
+        if not image_model_only:
+            if random_forest_model is None:
+                with open(default_random_forest_model, 'rb') as file:
+                    self.random_forest_model = pickle.load(file)
+            elif isinstance(random_forest_model, str):
+                with open(random_forest_model, 'rb') as file:
+                    self.random_forest_model = pickle.load(file)
+            else:
+                self.random_forest_model = random_forest_model
         else:
-            self.random_forest_model = random_forest_model
+            self.random_forest_model = None
         
         self.features_to_index = {feature: i for i, feature in enumerate(features)}
         # TODO: refactor partials and change strings to constants
@@ -97,17 +101,15 @@ class SpeakerWordPredictor:
 
         
         
-    def predict_speaker_words(self, video: VideoPredictor, output_folder, output_json):
+    def predict_speaker_words(self, video: VideoPredictor, output_folder=None, output_json=None):
         video.open_video()
         for i, segment in enumerate(video.transcript.segments):
             start_time_seconds = segment[0]
             end_time_seconds = segment[1]
-            word = segment[3].replace(" ", "")
-            word = word.replace(".", "")
-            word = word.replace(",", "")
-            word = word.replace("?", "")
+            word = segment[3]
             print(f"{i} Predicting for word {word}")
-            speakers, scores = self.get_predictions_for_word(video, start_time_seconds, end_time_seconds, i, output_folder)
+            speakers, scores, speaker_and_frame_attributes = self.get_predictions_for_word(
+                video, start_time_seconds, end_time_seconds, i, output_folder)
             if len(speakers) == 0:
                 print(f"Warning: No speakers found for segment {i} word {word}")
                 continue
@@ -116,17 +118,22 @@ class SpeakerWordPredictor:
             winning_speaker_index = np.argmax(scores)
             start_formatted = format(start_time_seconds, ".1f")
             for j, speaker in enumerate(speakers):
-                face_output = get_image_from_facial_image_object(speaker.get_best_image(), padding=25)
-                if j == winning_speaker_index and scores[j] >= 0.4:
-                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_winner.png", face_output)
+                face_outputs = [get_lips_from_image_of_face(get_image_from_facial_image_object(face_image_object)) for face_image_object in speaker.get_facial_images()]
+                face_output = combine_images_horizontally(output_filename=None, images_in_memory_copy=face_outputs)
+                max_speaker_prob_index = self.features_to_index[max_speaker_prob_formula_field]
+                speaker_prob = speaker_and_frame_attributes[j][max_speaker_prob_index]
+                if j == winning_speaker_index and speaker_prob >= 0.4:
+                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_winner.png", face_output)
                 elif j == winning_speaker_index:
-                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_best_guess.png", face_output)
+                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_best_guess.png", face_output)
                 else:
-                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_loser.png", face_output)  
+                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_loser.png", face_output)
+            pd_df = pd.DataFrame(speaker_and_frame_attributes)
+            pd_df.to_csv(f"{output_folder}/segment_{i}_speaker_and_frame_attributes.csv", mode='w', header=False, index=True)  
 
         video.close_video()
 
-    def get_predictions_for_word(self, video, start_time_seconds, end_time_seconds, segment_id, output_folder):
+    def get_predictions_for_word(self, video, start_time_seconds, end_time_seconds):
         '''
         returns the speakers and their scores for a word ordered by most likely speaker
         '''
@@ -136,7 +143,7 @@ class SpeakerWordPredictor:
         potential_speakers = get_potential_speakers(frames)
         speaker_attributes = self.get_image_model_results(potential_speakers)
         if speaker_attributes is None or len(speaker_attributes) == 0:
-            return [], []
+            return [], [], []
         max_vals_by_column = np.max(speaker_attributes, axis=0)
         min_vals_by_column = np.min(speaker_attributes, axis=0)
         mean_vals_by_column = np.mean(speaker_attributes, axis=0)
@@ -152,9 +159,14 @@ class SpeakerWordPredictor:
                 (speaker_and_frame_attributes, partial_result.reshape(len(partial_result), 1)),
                 axis=1,
                 )
-        pd_df = pd.DataFrame(speaker_and_frame_attributes)
-        pd_df.to_csv(f"{output_folder}/segment_{segment_id}_speaker_and_frame_attributes.csv", mode='w', header=False, index=True)
-        return potential_speakers, self.random_forest_model.predict(speaker_and_frame_attributes)
+        predictions = self.random_forest_model.predict(speaker_and_frame_attributes)
+        final_speakers = []
+        final_scores = []
+        for i, speaker in enumerate(potential_speakers):
+            final_speakers.append(speaker)
+            final_scores.append(predictions[i])
+
+        return final_speakers, final_scores, speaker_and_frame_attributes
 
     def get_image_model_results(self, potential_speakers):
         if len(potential_speakers) == 0:
@@ -218,13 +230,21 @@ class SpeakerWordPredictor:
 
     def get_image_model_results_for_speaker(self, image_parts, frame_ranges):
         probabilities = []
+        i = 0
         for frame_range in frame_ranges:
             input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts[frame_range[0]:frame_range[1] + 1])
             # example output of model.predict: ('speaking', tensor(1), tensor([0.0787, 0.9213]))
             # another example output of model.predict: ('silent', tensor(0), tensor([0.9909, 0.0091]))
             # therefore speaking probability is always at index 1 of third item in tuple
-            prediction = self.image_model.predict(input_image_to_model)[2][1].item()
+            current_time = time.time()
+            cv2.imwrite(f"segment_input_image_to_model_{i}__{current_time}.png", input_image_to_model)
+            prediction = self.image_model.predict(input_image_to_model)
+            print("prediction")
+            print(prediction)
+            prediction = prediction[2][1].item()
+            print(prediction)
             probabilities.append(prediction)
+            i += 1
         return probabilities    
 
                 
@@ -233,7 +253,7 @@ def get_video_frames(video, num_frames, middle_time_ms):
     we want to read 9 frames with the 5th read frame in the middle
     '''
     num_frames_before_middle = num_frames // 2
-    set_time_ms = middle_time_ms - num_frames_before_middle * 1000 / video.video_fps
+    set_time_ms = middle_time_ms - (num_frames_before_middle * 1000 / video.video_fps)
     video.set_video(set_time_ms)
     frames = []
     for _ in range(num_frames):

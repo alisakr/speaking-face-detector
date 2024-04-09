@@ -2,7 +2,9 @@ deepface<=0.0.87
 fastai
 numpy
 opencv-python
+pandas
 Pillow
 requests
+scikit-learn<=1.22.2
 tensorflow<=2.15.1
 

@@ -1,4 +1,25 @@
+import re
 import json
+
+
+def get_times_and_speakers_from_csv(csv_filename, includes_header=True):
+    '''
+    Given a csv filename, returns a list of tuples where each tuple contains the start and end times and the speaker name.
+    '''
+    times_and_speakers = []
+    with open(csv_filename, 'r') as f:
+        lines = f.readlines()
+        for i, line in enumerate(lines):
+            if i == 0 and includes_header:
+                continue
+            parts = line.strip().split(',')
+            start = float(parts[0])
+            end = float(parts[1])
+            speaker = parts[2]
+            word = re.sub(r'[^\w]', '', parts[3]).lower()
+            times_and_speakers.append((start, end, speaker, word))
+    return times_and_speakers
+
 
 def get_times_and_speakers(
         json_filename=None, 
@@ -21,7 +42,7 @@ def get_times_and_speakers(
             transcript_json = json.load(f)
     # expected json structure: {"segments": [
     #                               {
-    #                                   "wdlist":[{"start": 0.0, "end": 0.5},...], 
+    #                                   "wdlist":[{"start": 0.0, "end": 0.5, "word": "hi"},...], 
     #                                   speaker_key: "s1"}, ...
     #                                   ]
     #                            }      
@@ -29,7 +50,7 @@ def get_times_and_speakers(
     times_and_speakers = []
     epsillon = 0.000001
     for i, segment in enumerate(segments):
-        if image_for_each_segment:
+        if image_for_each_segment or speaker_key not in segment:
             speaker = f"paragraph_{i+1}"
         else:
             speaker = segment[speaker_key].replace(' ', '_').lower()
@@ -49,10 +70,11 @@ def get_times_and_speakers(
             if include_silent_periods and prior_end is not None:
                 # adds a segment if there is a gap between the end of the last segment and the start of the current segment
                 # potentially useful for collecting silent speakers for training data
-                times_and_speakers.append((prior_end+epsillon, start-epsillon, None))
+                times_and_speakers.append((prior_end+epsillon, start-epsillon, None, ""))
             end = wd['end']
             if start_time_seconds is not None and end < start_time_seconds:
                 continue
             prior_end = end
-            times_and_speakers.append((start, end, speaker))
+            word = re.sub(r'[^\w]', '', wd['word']).lower()
+            times_and_speakers.append((start, end, speaker, word))
     return times_and_speakers

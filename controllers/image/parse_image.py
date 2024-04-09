@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 
-def combine_images_horizontally(image_paths=None, output_filename=None, images_in_memory_copy=None, target_size=(100, 100)):
+def combine_images_horizontally(image_paths=None, output_filename=None, images_in_memory_copy=None, target_size=(100, 100), resize_images=True):
     # Combine multiple images into a single image horizontally
     # Parameters:
     # image_paths (list of str): The list of input image filenames, ignored if images_in_memory_copy is not None
@@ -15,7 +15,8 @@ def combine_images_horizontally(image_paths=None, output_filename=None, images_i
     else:
         images = [cv2.imread(image_path) for image_path in image_paths]
     # Resize the images to a fixed size
-    images = [cv2.resize(image, target_size) for image in images]
+    if resize_images:
+        images = [cv2.resize(image, target_size) for image in images]
     combined_image = np.concatenate(images, axis=1)
     if output_filename is not None:
         cv2.imwrite(output_filename, combined_image)
@@ -104,3 +105,15 @@ def get_part_of_image(area, frame, expand_percent=0):
     # height
     h = min(area['h']+int(area['h']*expand_percent), frame.shape[0]-y)
     return frame[y:y+h, x:x+w]
+
+def diff_image_structures(image1, image2):
+    # Compare two images and return the difference
+    # Parameters:
+    # image1 (numpy.ndarray): The first image
+    # image2 (numpy.ndarray): The second image
+    # Returns:
+    # numpy.ndarray: The difference between the two images
+    gray1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+    gray2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+    mse_over_max_sq = np.mean((gray1 - gray2) ** 2)/255**2
+    return np.sqrt(mse_over_max_sq)

@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 
-def combine_images_horizontally(image_paths=None, output_filename=None, images_in_memory_copy=None, target_size=(100, 100)):
+def combine_images_horizontally(image_paths=None, output_filename=None, images_in_memory_copy=None, target_size=(100, 100), resize_images=True):
     # Combine multiple images into a single image horizontally
     # Parameters:
     # image_paths (list of str): The list of input image filenames, ignored if images_in_memory_copy is not None
@@ -15,7 +15,8 @@ def combine_images_horizontally(image_paths=None, output_filename=None, images_i
     else:
         images = [cv2.imread(image_path) for image_path in image_paths]
     # Resize the images to a fixed size
-    images = [cv2.resize(image, target_size) for image in images]
+    if resize_images:
+        images = [cv2.resize(image, target_size) for image in images]
     combined_image = np.concatenate(images, axis=1)
     if output_filename is not None:
         cv2.imwrite(output_filename, combined_image)

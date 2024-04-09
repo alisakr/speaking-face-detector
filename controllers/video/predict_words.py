@@ -1,4 +1,5 @@
 from functools import partial
+import json
 import pickle
 import time
 
@@ -16,6 +17,7 @@ from constants import (
     max_speaker_prob_formula_field,
     max_frame_prob_formula_field,
     num_frames_to_read,
+    num_input_frames_to_model,
 )
 from controllers.video.video_predictor import VideoPredictor
 
@@ -53,85 +55,135 @@ class SpeakerWordPredictor:
                 self.random_forest_model = random_forest_model
         else:
             self.random_forest_model = None
-        
-        self.features_to_index = {feature: i for i, feature in enumerate(features)}
-        # TODO: refactor partials and change strings to constants
-        # some of the fields are calculated based on the max of other fields
-        max_speaker_prob_partial = partial(
-            max_of_selected_columns, 
-            columns=[
-                self.features_to_index['speaker_prob_start'], 
-                self.features_to_index['speaker_prob_middle'], 
-                self.features_to_index['speaker_prob_end']],
+        if self.random_forest_model is not None:
+            self.features_to_index = {feature: i for i, feature in enumerate(features)}
+            # TODO: refactor partials and change strings to constants
+            # some of the fields are calculated based on the max of other fields
+            max_speaker_prob_partial = partial(
+                max_of_selected_columns, 
+                columns=[
+                    self.features_to_index['speaker_prob_start'], 
+                    self.features_to_index['speaker_prob_middle'], 
+                    self.features_to_index['speaker_prob_end']],
+                    )
+            max_frame_prob_partial = partial(
+                max_of_selected_columns, 
+                columns=[
+                    self.features_to_index['frame_max_speaker_prob_start'], 
+                    self.features_to_index['frame_max_speaker_prob_middle'], 
+                    self.features_to_index['frame_max_speaker_prob_end']],
+                    )
+            has_max_speaker_partial = partial(
+                two_columns_equal, 
+                column1=self.features_to_index[max_frame_prob_formula_field], 
+                column2=self.features_to_index[max_speaker_prob_formula_field],
                 )
-        max_frame_prob_partial = partial(
-            max_of_selected_columns, 
-            columns=[
-                self.features_to_index['frame_max_speaker_prob_start'], 
-                self.features_to_index['frame_max_speaker_prob_middle'], 
-                self.features_to_index['frame_max_speaker_prob_end']],
+            has_max_speaker_start_partial = partial(
+                two_columns_equal, 
+                column1=self.features_to_index['speaker_prob_start'], 
+                column2=self.features_to_index['frame_max_speaker_prob_start'],
                 )
-        has_max_speaker_partial = partial(
-            two_columns_equal, 
-            column1=self.features_to_index[max_frame_prob_formula_field], 
-            column2=self.features_to_index[max_speaker_prob_formula_field],
-            )
-        has_max_speaker_start_partial = partial(
-            two_columns_equal, 
-            column1=self.features_to_index['speaker_prob_start'], 
-            column2=self.features_to_index['frame_max_speaker_prob_start'],
-            )
-        has_max_speaker_middle_partial = partial(
-            two_columns_equal, 
-            column1=self.features_to_index['speaker_prob_middle'], 
-            column2=self.features_to_index['frame_max_speaker_prob_middle'],
-            )
-        has_max_speaker_end_partial = partial(two_columns_equal, 
-            column1=self.features_to_index['speaker_prob_end'], 
-            column2=self.features_to_index['frame_max_speaker_prob_end'],
-            )
-        self.partials = [
-            max_speaker_prob_partial, 
-            max_frame_prob_partial, 
-            has_max_speaker_partial, 
-            has_max_speaker_start_partial, 
-            has_max_speaker_middle_partial, 
-            has_max_speaker_end_partial,
-            ]
+            has_max_speaker_middle_partial = partial(
+                two_columns_equal, 
+                column1=self.features_to_index['speaker_prob_middle'], 
+                column2=self.features_to_index['frame_max_speaker_prob_middle'],
+                )
+            has_max_speaker_end_partial = partial(two_columns_equal, 
+                column1=self.features_to_index['speaker_prob_end'], 
+                column2=self.features_to_index['frame_max_speaker_prob_end'],
+                )
+            self.partials = [
+                max_speaker_prob_partial, 
+                max_frame_prob_partial, 
+                has_max_speaker_partial, 
+                has_max_speaker_start_partial, 
+                has_max_speaker_middle_partial, 
+                has_max_speaker_end_partial,
+                ]
 
         
         
     def predict_speaker_words(self, video: VideoPredictor, output_folder=None, output_json=None):
         video.open_video()
+        speaker_score_by_segment = []
+        speaker_image_map = {}
         for i, segment in enumerate(video.transcript.segments):
             start_time_seconds = segment[0]
             end_time_seconds = segment[1]
+            speaker_image_map[i] = []
             word = segment[3]
             print(f"{i} Predicting for word {word}")
             speakers, scores, speaker_and_frame_attributes = self.get_predictions_for_word(
-                video, start_time_seconds, end_time_seconds, i, output_folder)
+                video, start_time_seconds, end_time_seconds)
             if len(speakers) == 0:
                 print(f"Warning: No speakers found for segment {i} word {word}")
+                speaker_score_by_segment.append(None)
                 continue
-            pd_df = pd.DataFrame(scores)
-            pd_df.to_csv(f"{output_folder}/segment_{i}_{word}.csv", mode='w', header=False, index=True)
+            if output_folder is not None:
+                pd_df = pd.DataFrame(scores)
+                pd_df.to_csv(f"{output_folder}/segment_{i}_{word}.csv", mode='w', header=False, index=True)
             winning_speaker_index = np.argmax(scores)
             start_formatted = format(start_time_seconds, ".1f")
             for j, speaker in enumerate(speakers):
-                face_outputs = [get_lips_from_image_of_face(get_image_from_facial_image_object(face_image_object)) for face_image_object in speaker.get_facial_images()]
-                face_output = combine_images_horizontally(output_filename=None, images_in_memory_copy=face_outputs)
-                max_speaker_prob_index = self.features_to_index[max_speaker_prob_formula_field]
-                speaker_prob = speaker_and_frame_attributes[j][max_speaker_prob_index]
-                if j == winning_speaker_index and speaker_prob >= 0.4:
-                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_winner.png", face_output)
-                elif j == winning_speaker_index:
-                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_best_guess.png", face_output)
+                #face_outputs = [get_lips_from_image_of_face(get_image_from_facial_image_object(face_image_object)) for face_image_object in speaker.get_facial_images()]
+                #face_output = combine_images_horizontally(output_filename=None, images_in_memory_copy=face_outputs)
+                face_output = get_image_from_facial_image_object(speaker.get_best_image(), padding=25)
+                if self.random_forest_model is not None:
+                    max_speaker_prob_index = self.features_to_index[max_speaker_prob_formula_field]
+                    speaker_prob = speaker_and_frame_attributes[j][max_speaker_prob_index]
                 else:
-                    cv2.imwrite(f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_loser.png", face_output)
-            pd_df = pd.DataFrame(speaker_and_frame_attributes)
-            pd_df.to_csv(f"{output_folder}/segment_{i}_speaker_and_frame_attributes.csv", mode='w', header=False, index=True)  
+                    speaker_prob = scores[j]
+                if output_folder is not None:
+                    if j == winning_speaker_index and speaker_prob >= 0.4:
+                        speaker_file = f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_winner.png"
+                    elif j == winning_speaker_index:
+                        speaker_file = f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_best_guess.png"
+                    else:
+                        speaker_file = f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}.png"
+                    cv2.imwrite(speaker_file, face_output)
+                    speaker_image_map[i].append(speaker_file)
+            if output_folder is not None:
+                pd_df = pd.DataFrame(speaker_and_frame_attributes)
+                pd_df.to_csv(f"{output_folder}/segment_{i}_speaker_and_frame_attributes.csv", mode='w', header=False, index=True)
+            speaker_score_by_segment.append((speakers, scores))
+              
 
         video.close_video()
+        if output_json is not None:
+            if output_folder is None:
+                raise ValueError("Output folder must be provided to produce output json")
+            with open(f'{output_folder}/{output_json}', 'w') as f:
+                if video.transcript.json is None:
+                    raise ValueError("Transcript json must be provided to produce output json")
+                word_num = 0
+                for segment in video.transcript.json["segments"]:
+                    for i, word in enumerate(segment["wdlist"]):
+                        if speaker_score_by_segment[word_num] is None:
+                            word_num += 1
+                            continue
+                        segment["wdlist"][i]["result"] = []
+                        speakers = speaker_score_by_segment[word_num][0]
+                        scores = speaker_score_by_segment[word_num][1]
+                        sorted_indices = np.argsort(scores)
+                        score_sum = np.sum(scores)
+                        for j in range(len(speakers)):
+                            index = len(speakers) - j - 1
+                            speaker_image = speaker_image_map[word_num][sorted_indices[index]]
+                            score = scores[sorted_indices[index]]
+                            segment["wdlist"][i]["result"].append(
+                                {
+                                    "speaker": speaker_image,
+                                    "score": score,
+                                    "score_sum": score_sum,
+                                }
+                            )
+                        word_num += 1
+                f.write(json.dumps(video.transcript.json))
+
+                
+        # return the speaker and scores for each word
+        return speaker_score_by_segment
+
 
     def get_predictions_for_word(self, video, start_time_seconds, end_time_seconds):
         '''
@@ -139,11 +191,18 @@ class SpeakerWordPredictor:
         '''
         middle_time = (start_time_seconds + end_time_seconds) / 2
         middle_time_ms = middle_time * 1000
-        frames = get_video_frames(video, num_frames_to_read, middle_time_ms)
+        if self.random_forest_model is not None:
+            frames = get_video_frames(video, num_frames_to_read, middle_time_ms)
+        else:
+            frames = get_video_frames(video, num_input_frames_to_model, middle_time_ms)
         potential_speakers = get_potential_speakers(frames)
         speaker_attributes = self.get_image_model_results(potential_speakers)
         if speaker_attributes is None or len(speaker_attributes) == 0:
             return [], [], []
+        if self.random_forest_model is None:
+            print("shape of speaker attributes", speaker_attributes.shape)
+            print(speaker_attributes)
+            return potential_speakers, speaker_attributes.T[0], speaker_attributes
         max_vals_by_column = np.max(speaker_attributes, axis=0)
         min_vals_by_column = np.min(speaker_attributes, axis=0)
         mean_vals_by_column = np.mean(speaker_attributes, axis=0)
@@ -193,6 +252,8 @@ class SpeakerWordPredictor:
         start_frames = (0, 4)
         middle_frames = (2, 6)
         end_frames = (4, 8)
+        if self.random_forest_model is None:
+            return self.get_image_model_results_for_speaker(image_parts, [middle_frames])
         frame_ranges = [start_frames, middle_frames, end_frames]
         # lip movements for each 5 frame set, (start, middle, and end)
         lip_movement_totals_by_part = [0.0, 0.0, 0.0]
@@ -232,17 +293,19 @@ class SpeakerWordPredictor:
         probabilities = []
         i = 0
         for frame_range in frame_ranges:
-            input_image_to_model = combine_images_horizontally(output_filename=None, images_in_memory_copy=image_parts[frame_range[0]:frame_range[1] + 1])
+            input_image_to_model = combine_images_horizontally(
+                output_filename=None, 
+                images_in_memory_copy=image_parts[frame_range[0]:frame_range[1] + 1], 
+                # since we resize in pre-model transforms, second resize should be unnecessary
+                resize_images=False,
+                )
             # example output of model.predict: ('speaking', tensor(1), tensor([0.0787, 0.9213]))
             # another example output of model.predict: ('silent', tensor(0), tensor([0.9909, 0.0091]))
             # therefore speaking probability is always at index 1 of third item in tuple
             current_time = time.time()
             cv2.imwrite(f"segment_input_image_to_model_{i}__{current_time}.png", input_image_to_model)
             prediction = self.image_model.predict(input_image_to_model)
-            print("prediction")
-            print(prediction)
             prediction = prediction[2][1].item()
-            print(prediction)
             probabilities.append(prediction)
             i += 1
         return probabilities    

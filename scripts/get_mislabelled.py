@@ -59,7 +59,7 @@ def main():
     parser.add_argument('--model', default=default_speaking_model, type=str, help='model to use')
     parser.add_argument('--image_prefix', default='', type=str, help='path to image file')
     parser.add_argument('--target_label', default=None, type=str, help='expected_class')
-    parser.add_argument('--min_word_distance_ms', default=10.0, type=float, help='minimum time between words in milliseconds')
+    parser.add_argument('--min_word_distance_ms', default=0, type=float, help='minimum time between words in milliseconds')
     parser.add_argument('--show_mislabelled', default="True", type=str, help='show the names of mislabelled files')
     result_array = []
     args = parser.parse_args()

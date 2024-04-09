@@ -172,7 +172,7 @@ class SpeakerWordPredictor:
                             score = scores[sorted_indices[index]]
                             segment["wdlist"][i]["result"].append(
                                 {
-                                    "speaker": speaker_image,
+                                    "speaker_image": speaker_image,
                                     "score": score,
                                     "score_sum": score_sum,
                                 }

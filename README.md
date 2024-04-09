@@ -10,7 +10,7 @@ The above steps are working locally for package authors on python version 3.9.1.
 
 For predicting the faces of every words, you can use the script get_predictions_from_image_model_only.py,  In the output_directory, we save the faces found for every word and in the output json we save likely face of each paragraph's speaker.
 
-`python scripts/get_predictions.py --api_key_yaml my_api_key.yaml --video_path "../../Downloads/input_video.mp4" --output_directory output_dir --output_json output.json`
+`python scripts/get_predictions_from_image_model_only.py --api_key_yaml api_key.yaml --video_path "../../Downloads/my_video.mp4" --output_directory "../out_again" --output_json json_test.json`
 
 the api_key yaml should include the following 2 lines
 

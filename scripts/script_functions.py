@@ -5,6 +5,7 @@ sys.path.append('./')
 
 from controllers.transcript.parse_transcript import *
 from controllers.command_line_args_parser import get_or_create_transcript
+from controllers.transforms.transforms import GrayscaleTransform
 from controllers.video.predict_words import SpeakerWordPredictor
 from controllers.video.video_predictor import VideoPredictor
 from entities.transcript import Transcript
@@ -38,6 +39,7 @@ def make_predictions(image_model_only=False):
         args.start_time_seconds = None
     if args.end_time_seconds < 0:
         args.end_time_seconds = None
+    predictor = SpeakerWordPredictor(image_model_only=image_model_only)
     transcript_json = get_or_create_transcript(args)
 
     times_and_speakers = get_times_and_speakers(
@@ -48,7 +50,7 @@ def make_predictions(image_model_only=False):
             )
     print(times_and_speakers)
     create_directory_if_not_exists(args.output_directory)
-    predictor = SpeakerWordPredictor(image_model_only=image_model_only)
+    
     transcript = Transcript(transcript_json, times_and_speakers)
     if args.segments_csv is not None:
         with open(args.segments_csv, 'w') as f:

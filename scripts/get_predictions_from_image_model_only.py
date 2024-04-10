@@ -3,6 +3,7 @@ import sys
 sys.path.append('./')
 
 from scripts.script_functions import make_predictions
+from controllers.transforms import GrayscaleTransform
 
 def main():
     '''

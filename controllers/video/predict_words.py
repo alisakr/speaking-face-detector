@@ -16,9 +16,11 @@ from constants import (
     features,
     max_speaker_prob_formula_field,
     max_frame_prob_formula_field,
+    minimum_speaker_lip_change_frame_by_frame,
     num_frames_to_read,
     num_input_frames_to_model,
 )
+from controllers.transforms.transforms import GrayscaleTransform
 from controllers.video.video_predictor import VideoPredictor
 
 from controllers.image import (
@@ -29,6 +31,7 @@ from controllers.image import (
     get_lips_from_image_of_face,
 )
 from entities.speaker import Speaker
+from entities.speaker_result import SpeakerResult
 from utils import (
     max_of_selected_columns,
     two_columns_equal,
@@ -106,12 +109,27 @@ class SpeakerWordPredictor:
     def predict_speaker_words(self, video: VideoPredictor, output_folder=None, output_json=None):
         video.open_video()
         speaker_score_by_segment = []
+        segment_results = []
         speaker_image_map = {}
+        min_word_num = None
+        max_word_num = None
         for i, segment in enumerate(video.transcript.segments):
+            
             start_time_seconds = segment[0]
             end_time_seconds = segment[1]
             speaker_image_map[i] = []
             word = segment[3]
+            segment_num = segment[4]
+            word_in_segment_num = segment[5]
+            if video.transcript.json is None:
+                word_in_input_transcript = None
+            else:
+                word_in_input_transcript = video.transcript.json["segments"][segment_num]["wdlist"][word_in_segment_num]
+
+            if min_word_num is None or segment_num < min_word_num:
+                min_word_num = segment_num
+            if max_word_num is None or segment_num > max_word_num:
+                max_word_num = segment_num
             print(f"{i} Predicting for word {word}")
             speakers, scores, speaker_and_frame_attributes = self.get_predictions_for_word(
                 video, start_time_seconds, end_time_seconds)
@@ -124,6 +142,8 @@ class SpeakerWordPredictor:
                 pd_df.to_csv(f"{output_folder}/segment_{i}_{word}.csv", mode='w', header=False, index=True)
             winning_speaker_index = np.argmax(scores)
             start_formatted = format(start_time_seconds, ".1f")
+            word_in_input_transcript_result = []
+            score_sum = np.sum(scores)
             for j, speaker in enumerate(speakers):
                 #face_outputs = [get_lips_from_image_of_face(get_image_from_facial_image_object(face_image_object)) for face_image_object in speaker.get_facial_images()]
                 #face_output = combine_images_horizontally(output_filename=None, images_in_memory_copy=face_outputs)
@@ -134,7 +154,7 @@ class SpeakerWordPredictor:
                 else:
                     speaker_prob = scores[j]
                 if output_folder is not None:
-                    if j == winning_speaker_index and speaker_prob >= 0.4:
+                    if j == winning_speaker_index and speaker_prob >= 0.5:
                         speaker_file = f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_winner.png"
                     elif j == winning_speaker_index:
                         speaker_file = f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}_best_guess.png"
@@ -142,10 +162,14 @@ class SpeakerWordPredictor:
                         speaker_file = f"{output_folder}/segment_{i}_word_{word}_{start_formatted}_{j}.png"
                     cv2.imwrite(speaker_file, face_output)
                     speaker_image_map[i].append(speaker_file)
+                    speaker_filename = speaker_file.split('/')[-1]
+                    speaker_result = SpeakerResult(speaker_filename, speaker_prob, score_sum)
+                    word_in_input_transcript_result.append(speaker_result)
             if output_folder is not None:
                 pd_df = pd.DataFrame(speaker_and_frame_attributes)
                 pd_df.to_csv(f"{output_folder}/segment_{i}_speaker_and_frame_attributes.csv", mode='w', header=False, index=True)
-            speaker_score_by_segment.append((speakers, scores))
+            speaker_score_by_segment.append((speakers, scores, word_in_input_transcript))
+            segment_results.append((word_in_input_transcript, word_in_input_transcript_result))
               
 
         video.close_video()
@@ -155,29 +179,19 @@ class SpeakerWordPredictor:
             with open(f'{output_folder}/{output_json}', 'w') as f:
                 if video.transcript.json is None:
                     raise ValueError("Transcript json must be provided to produce output json")
-                word_num = 0
-                for segment in video.transcript.json["segments"]:
-                    for i, word in enumerate(segment["wdlist"]):
-                        if speaker_score_by_segment[word_num] is None:
-                            word_num += 1
-                            continue
-                        segment["wdlist"][i]["result"] = []
-                        speakers = speaker_score_by_segment[word_num][0]
-                        scores = speaker_score_by_segment[word_num][1]
-                        sorted_indices = np.argsort(scores)
-                        score_sum = np.sum(scores)
-                        for j in range(len(speakers)):
-                            index = len(speakers) - j - 1
-                            speaker_image = speaker_image_map[word_num][sorted_indices[index]]
-                            score = scores[sorted_indices[index]]
-                            segment["wdlist"][i]["result"].append(
-                                {
-                                    "speaker_image": speaker_image,
-                                    "score": score,
-                                    "score_sum": score_sum,
-                                }
-                            )
-                        word_num += 1
+                segment_num = 0
+                for word_in_input_transcript, word_in_input_transcript_result in segment_results:
+                    if word_in_input_transcript is None:
+                        continue
+                    word_in_input_transcript_result = sorted(word_in_input_transcript_result, reverse=True)
+                    result_as_json = map(lambda obj: {
+                        "speaker_image": obj.image_file, 
+                        "score": obj.score, 
+                        "score_sum": obj.score_sum,
+                        }, 
+                        word_in_input_transcript_result,
+                        )
+                    word_in_input_transcript["result"] = list(result_as_json)
                 f.write(json.dumps(video.transcript.json))
 
                 
@@ -202,6 +216,9 @@ class SpeakerWordPredictor:
         if self.random_forest_model is None:
             print("shape of speaker attributes", speaker_attributes.shape)
             print(speaker_attributes)
+            for i in range(len(speaker_attributes)):
+                if speaker_attributes[i][1] < minimum_speaker_lip_change_frame_by_frame:
+                    speaker_attributes[i][0] = 0.0
             return potential_speakers, speaker_attributes.T[0], speaker_attributes
         max_vals_by_column = np.max(speaker_attributes, axis=0)
         min_vals_by_column = np.min(speaker_attributes, axis=0)
@@ -253,15 +270,17 @@ class SpeakerWordPredictor:
         middle_frames = (2, 6)
         end_frames = (4, 8)
         if self.random_forest_model is None:
-            return self.get_image_model_results_for_speaker(image_parts, [middle_frames])
-        frame_ranges = [start_frames, middle_frames, end_frames]
+            frame_ranges = [start_frames]
+            #return self.get_image_model_results_for_speaker(image_parts, [middle_frames])
+        else:
+            frame_ranges = [start_frames, middle_frames, end_frames]
         # lip movements for each 5 frame set, (start, middle, and end)
         lip_movement_totals_by_part = [0.0, 0.0, 0.0]
         lip_frame_by_frame_change_by_part = [0.0, 0.0, 0.0]
 
         for i, facial_image in enumerate(speaker.get_facial_images()):
             confidence += facial_image.confidence
-            facial_area_size += facial_image.get_facial_area_size()
+            facial_area_size += facial_image.get_facial_area_size()/(facial_image.frame.shape[0]*facial_image.frame.shape[1])
             if i == 0:
                 continue
             frame_change = diff_image_structures(image_parts[i-1], image_parts[i])
@@ -273,20 +292,18 @@ class SpeakerWordPredictor:
                         lip_movement_totals_by_part[j] = diff_image_structures(image_parts[frame_range[0]], image_parts[frame_range[1]])
         facial_area_size /= num_faces
         confidence /= num_faces
+
         lip_movement_start_to_end = lip_movement_totals_by_part[0] + lip_movement_totals_by_part[2]
         speaker_attributes.extend(self.get_image_model_results_for_speaker(image_parts, frame_ranges))
         speaker_attributes.extend([
             lip_change_frame_by_frame,
-            lip_movement_start_to_end,
-            lip_frame_by_frame_change_by_part[0],
-            lip_movement_totals_by_part[0],
-            lip_frame_by_frame_change_by_part[1],
-            lip_movement_totals_by_part[1],
-            lip_frame_by_frame_change_by_part[2],
-            lip_movement_totals_by_part[2],
-            confidence,
-            facial_area_size,
-        ])
+            lip_movement_start_to_end])
+        for i in range(len(frame_ranges)):
+            speaker_attributes.extend([
+                lip_frame_by_frame_change_by_part[i],
+                lip_movement_totals_by_part[i],
+                ])
+        speaker_attributes.extend([confidence, facial_area_size])
         return speaker_attributes
 
     def get_image_model_results_for_speaker(self, image_parts, frame_ranges):
@@ -302,8 +319,6 @@ class SpeakerWordPredictor:
             # example output of model.predict: ('speaking', tensor(1), tensor([0.0787, 0.9213]))
             # another example output of model.predict: ('silent', tensor(0), tensor([0.9909, 0.0091]))
             # therefore speaking probability is always at index 1 of third item in tuple
-            current_time = time.time()
-            cv2.imwrite(f"segment_input_image_to_model_{i}__{current_time}.png", input_image_to_model)
             prediction = self.image_model.predict(input_image_to_model)
             prediction = prediction[2][1].item()
             probabilities.append(prediction)
@@ -394,6 +409,11 @@ def find_best_match_to_speaker(speaker, faces):
                             'time': 1.26,
                         }
         '''
+        speaker_area = speaker.get_best_image().get_facial_area_size()
+        new_face_area = face.get_facial_area_size()
+        # if the new face is too small or too large, compared to speaker, skip it
+        if new_face_area < 0.25 * speaker_area or new_face_area > 4 * speaker_area:
+            continue
         comparison = DeepFace.verify(
             face.facial_embedding, 
             speaker.get_best_image().facial_embedding, 

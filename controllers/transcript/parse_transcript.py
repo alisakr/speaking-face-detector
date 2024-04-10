@@ -58,11 +58,11 @@ def get_times_and_speakers(
             continue
         wdlist = segment['wdlist']
         prior_end = None
-        for i in range(len(wdlist)):
-            wd = wdlist[i]
-            if ignore_first_last_word and i == 0:
+        for j in range(len(wdlist)):
+            wd = wdlist[j]
+            if ignore_first_last_word and j == 0:
                 continue
-            if ignore_first_last_word and i == len(wdlist)-1:
+            if ignore_first_last_word and j == len(wdlist)-1:
                 continue
             start = wd['start']
             if end_time_seconds is not None and start > end_time_seconds:
@@ -70,11 +70,11 @@ def get_times_and_speakers(
             if include_silent_periods and prior_end is not None:
                 # adds a segment if there is a gap between the end of the last segment and the start of the current segment
                 # potentially useful for collecting silent speakers for training data
-                times_and_speakers.append((prior_end+epsillon, start-epsillon, None, ""))
+                times_and_speakers.append((prior_end+epsillon, start-epsillon, None, "", i, j))
             end = wd['end']
             if start_time_seconds is not None and end < start_time_seconds:
                 continue
             prior_end = end
             word = re.sub(r'[^\w]', '', wd['word']).lower()
-            times_and_speakers.append((start, end, speaker, word))
+            times_and_speakers.append((start, end, speaker, word, i, j))
     return times_and_speakers
